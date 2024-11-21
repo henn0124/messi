@@ -1,0 +1,4 @@
+{"timestamp": "2024-11-20T13:57:31.788285", "type": "wake_word_detected", "content": "Hey Messy detected"}
+{"timestamp": "2024-11-20T13:57:35.123358", "type": "user_speech", "content": "What's the capital of France?\n", "audio_length": 881664, "transcription_model": "whisper"}
+{"timestamp": "2024-11-20T13:57:35.125720", "type": "router_decision", "content": "{'skill': 'education', 'context': {'intent': 'answer_question', 'mode': 'informative', 'parameters': {'question': \"What's the capital of France?\\n\"}}}", "skill": "education", "intent": "answer_question"}
+{"timestamp": "2024-11-20T13:57:36.539598", "type": "system_response", "content": "The capital of France is Paris. It's a big city known for its famous Eiffel Tower and delicious pastries like croissants! Fun fact: Paris is often called \"The City of Light\" because it was one of the first cities in the world to have street lights.", "skill": "education", "context": "education"}

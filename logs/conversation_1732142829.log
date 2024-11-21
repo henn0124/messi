@@ -1,0 +1,8 @@
+{"timestamp": "2024-11-20T14:47:14.637939", "type": "wake_word_detected", "content": "Hey Messy detected"}
+{"timestamp": "2024-11-20T14:47:15.535505", "type": "user_speech", "content": "Is Santa Claus real?\n", "audio_length": 218112, "transcription_model": "whisper", "transcription_time": "0.90s"}
+{"timestamp": "2024-11-20T14:47:20.422530", "type": "router_decision", "content": "{'skill': 'education', 'context': {'intent': 'question', 'mode': 'reading', 'parameters': {'topic': 'Santa Claus'}}}", "skill": "education", "intent": "question", "routing_time": "0.86s"}
+{"timestamp": "2024-11-20T14:47:21.069631", "type": "system_response", "content": "Hello there! It looks like your message didn't come through. What would you like to learn or talk about today? \ud83d\ude0a", "skill": "education", "context": "education", "response_time": "0.65s"}
+{"timestamp": "2024-11-20T14:47:44.622278", "type": "wake_word_detected", "content": "Hey Messy detected"}
+{"timestamp": "2024-11-20T14:47:45.490404", "type": "user_speech", "content": "Can you tell me a story about a dog?\n", "audio_length": 154624, "transcription_model": "whisper", "transcription_time": "0.87s"}
+{"timestamp": "2024-11-20T14:47:50.163413", "type": "router_decision", "content": "{'skill': 'interactive_story', 'context': {'intent': 'tell_story', 'mode': 'reading', 'parameters': {'theme': 'a dog?'}}}", "skill": "interactive_story", "intent": "tell_story", "routing_time": "0.00s"}
+{"timestamp": "2024-11-20T14:47:50.165126", "type": "story_response", "content": "I'd love to tell you a story! What kind of story would you like to hear about?", "chapter": 0, "context": "error", "auto_continue": false}

@@ -1,0 +1,4 @@
+{"timestamp": "2024-11-20T14:55:03.224391", "type": "wake_word_detected", "content": "Hey Messy detected"}
+{"timestamp": "2024-11-20T14:55:04.425223", "type": "user_speech", "content": "Can you tell me a story about a dragon?\n", "audio_length": 234496, "transcription_model": "whisper", "transcription_time": "1.20s"}
+{"timestamp": "2024-11-20T14:55:08.715268", "type": "router_decision", "content": "{'skill': 'interactive_story', 'context': {'text': 'Can you tell me a story about a dragon?\\n', 'context': {'intent': 'tell_story', 'mode': 'reading', 'parameters': {'theme': 'a dragon'}}}}", "skill": "interactive_story", "intent": null, "routing_time": "0.00s"}
+{"timestamp": "2024-11-20T14:55:08.716107", "type": "story_response", "content": "I'd love to tell you a story! What kind of story would you like to hear about?", "chapter": 0, "context": "error", "auto_continue": false}

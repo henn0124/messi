@@ -1,0 +1,13 @@
+[Unit]
+Description=Smart Pi Speaker Service
+After=network.target
+
+[Service]
+User=pi
+WorkingDirectory=/home/pi/smart-pi-speaker
+Environment=PATH=/home/pi/smart-pi-speaker/.venv/bin
+ExecStart=/home/pi/smart-pi-speaker/.venv/bin/python -m uvicorn src.main:app --host 0.0.0.0 --port 8000
+Restart=always
+
+[Install]
+WantedBy=multi-user.target 

@@ -1,0 +1,4 @@
+{"timestamp": "2024-11-20T13:59:56.414247", "type": "wake_word_detected", "content": "Hey Messy detected"}
+{"timestamp": "2024-11-20T13:59:59.681460", "type": "user_speech", "content": "What's the capital of Germany?\n", "audio_length": 881664, "transcription_model": "whisper"}
+{"timestamp": "2024-11-20T13:59:59.682532", "type": "router_decision", "content": "{'skill': 'education', 'context': {'intent': 'answer_question', 'mode': 'informative', 'parameters': {'question': \"What's the capital of Germany?\\n\"}}}", "skill": "education", "intent": "answer_question"}
+{"timestamp": "2024-11-20T14:00:00.718123", "type": "system_response", "content": "The capital of Germany is Berlin. It's a big city known for its history and culture. Fun fact: Berlin has a famous landmark called the Brandenburg Gate, which looks like a big, ancient archway!", "skill": "education", "context": "education"}

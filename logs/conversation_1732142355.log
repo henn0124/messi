@@ -1,0 +1,4 @@
+{"timestamp": "2024-11-20T14:39:21.260720", "type": "wake_word_detected", "content": "Hey Messy detected"}
+{"timestamp": "2024-11-20T14:39:22.982401", "type": "user_speech", "content": "What's the cap of the United States?\n", "audio_length": 169984, "transcription_model": "whisper"}
+{"timestamp": "2024-11-20T14:39:27.512579", "type": "router_decision", "content": "{'skill': 'education', 'context': {'intent': 'answer_question', 'mode': 'informative', 'parameters': {'question': \"What's the cap of the United States?\\n\"}}}", "skill": "education", "intent": "answer_question"}
+{"timestamp": "2024-11-20T14:39:28.667234", "type": "system_response", "content": "The capital of the United States is Washington, D.C. It's where the President lives in the White House and where many important government buildings are. Fun fact: The \"D.C.\" stands for \"District of Columbia!\"", "skill": "education", "context": "education"}
