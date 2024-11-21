@@ -3,96 +3,230 @@ from typing import Dict
 from .config import Settings
 import json
 import time
+from .cache_manager import ResponseCache
 
 class AssistantRouter:
     def __init__(self):
         self.settings = Settings()
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
         
-        # Add conversation context tracking
+        # Enhanced conversation context
         self.conversation_context = {
             "active": False,
-            "topic": None,
+            "current_topic": None,
+            "subtopics": [],
             "last_question": None,
             "last_answer": None,
-            "follow_up_window": 10.0,  # Seconds to wait for follow-up
-            "last_interaction": 0
+            "mentioned_entities": set(),  # Track mentioned places, things, people
+            "follow_up_window": 10.0,
+            "last_interaction": 0,
+            "conversation_history": []    # Keep last N interactions
         }
         
-        # Define available skills
-        self.available_skills = {
-            "interactive_story": {
-                "description": "Interactive storytelling including reading, creating, and modifying stories"
+        # Topic relationships for better context
+        self.topic_relationships = {
+            "location": {
+                "related_aspects": ["culture", "history", "landmarks", "food"],
+                "follow_up_patterns": [
+                    "what else is in {location}",
+                    "tell me more about {location}",
+                    "what's famous in {location}"
+                ]
             },
-            "education": {
-                "description": "Educational content and learning activities"
+            "history": {
+                "related_aspects": ["events", "people", "places", "dates"],
+                "follow_up_patterns": [
+                    "what happened next",
+                    "who else was involved",
+                    "when did this happen"
+                ]
             }
         }
+        
+        self.response_cache = ResponseCache()
+    
+    async def _create_contextual_prompt(self, user_input: str) -> list:
+        """Create a context-aware system prompt using cache history"""
+        messages = []
+        
+        # Check cache for relevant context
+        cached_context = await self.response_cache.get_relevant_context(
+            user_input,
+            self.conversation_context["current_topic"],
+            self.conversation_context["mentioned_entities"]
+        )
+        
+        # Build system prompt with cache-aware context
+        system_content = f"""You are a friendly AI assistant for children.
+Current conversation state: {self.conversation_context['current_topic']}
+Recent topics discussed: {', '.join(list(self.conversation_context['mentioned_entities'])[-3:])}
+Last question asked: {self.conversation_context['last_question']}
+
+Previous relevant information:
+{self._format_cached_context(cached_context)}
+
+Maintain conversation flow and use previous context appropriately.
+If referring to cached information, acknowledge it naturally.
+"""
+        
+        messages.append({"role": "system", "content": system_content})
+        
+        # Add recent conversation history
+        for interaction in self.conversation_context["conversation_history"][-3:]:
+            messages.append({
+                "role": "user",
+                "content": interaction["input"]
+            })
+        
+        # Add current query
+        messages.append({
+            "role": "user",
+            "content": user_input
+        })
+        
+        return messages
+    
+    def _format_cached_context(self, cached_context: list) -> str:
+        """Format cached context for prompt inclusion"""
+        if not cached_context:
+            return "No relevant previous information."
+            
+        formatted = []
+        for entry in cached_context:
+            formatted.append(f"- Previously discussed {entry['topic']}: {entry['summary']}")
+        
+        return "\n".join(formatted)
     
     async def route_request(self, user_input: str, time_of_day: str = "evening") -> Dict:
-        """Route user request using chat completion"""
         try:
             print("\n=== Assistant Router ===")
             print(f"Processing request: '{user_input}'")
-            print(f"Time of day: {time_of_day}")
             
-            input_lower = user_input.lower()
+            # Check cache with context
+            cached_response = await self.response_cache.get_cached_response(
+                user_input, 
+                {
+                    "topic": self.conversation_context["current_topic"],
+                    "mentioned_entities": list(self.conversation_context["mentioned_entities"]),
+                    "time_of_day": time_of_day,
+                    "last_question": self.conversation_context["last_question"]
+                }
+            )
             
-            # Story requests - handle first
-            if any(phrase in input_lower for phrase in ["tell me a story", "story about"]):
-                print("✓ Story request detected")
-                theme = input_lower.split("about", 1)[1].strip().rstrip('?') if "about" in input_lower else ""
-                print(f"✓ Story theme: {theme}")
+            if cached_response:
+                print("✓ Using cached response")
+                # Update conversation context with cached response
+                self.conversation_context["last_answer"] = cached_response["text"]
+                return self._adapt_cached_response(cached_response)
+            
+            # If no cache hit, proceed with normal routing
+            messages = await self._create_contextual_prompt(user_input)
+            response = await self._get_openai_response(messages)
+            
+            # Cache the new response
+            await self.response_cache.cache_response(
+                user_input,
+                response,
+                self.conversation_context
+            )
+            
+            return response
+            
+    def _adapt_cached_response(self, cached_response: Dict) -> Dict:
+        """Adapt cached response to current context"""
+        # Add variety to cached responses
+        variations = {
+            "Also, ": "Additionally, ",
+            "Moreover, ": "Furthermore, ",
+            "You see, ": "As you might know, "
+        }
+        
+        text = cached_response["text"]
+        for old, new in variations.items():
+            if text.startswith(old):
+                text = new + text[len(old):]
+                break
                 
-                # Return story intent without ending conversation
-                return {
-                    "skill": "interactive_story",
-                    "intent": "tell_story",
-                    "mode": "reading",
-                    "text": user_input,
-                    "parameters": {"theme": theme}
-                }
+        return {
+            **cached_response,
+            "text": text,
+            "from_cache": True
+        }
+    
+    def _check_followup(self, text: str) -> tuple[bool, dict]:
+        """Check if question is a follow-up and get context"""
+        if not self.conversation_context["current_topic"]:
+            return False, {}
             
-            # Educational questions
-            if any(input_lower.startswith(word) for word in ["what", "where", "when", "why", "how", "is", "are", "can", "tell"]):
-                print("✓ Educational question detected")
-                # Start new conversation context
-                self.conversation_context.update({
-                    "active": True,
-                    "topic": self._extract_topic(input_lower),
-                    "last_question": user_input,
-                    "last_interaction": time.time()
-                })
-                return {
-                    "skill": "education",
-                    "intent": "answer_question",
-                    "mode": "informative",
-                    "parameters": {"question": user_input}
-                }
-            
-            # If no direct match, treat as educational query
-            print("✓ Treating as educational query")
-            self.conversation_context.update({
-                "active": True,
-                "topic": self._extract_topic(input_lower),
-                "last_question": user_input,
-                "last_interaction": time.time()
-            })
-            return {
-                "skill": "education",
-                "intent": "answer_question",
-                "mode": "informative",
-                "parameters": {"question": user_input}
+        # Check for follow-up indicators
+        followup_indicators = [
+            "what about", "and", "also", "then", "so",
+            "is it", "are they", "does it", "do they"
+        ]
+        
+        # Check for pronouns referring to previous context
+        context_pronouns = [
+            "it", "they", "there", "that", "those", "these",
+            "this", "he", "she", "their", "its"
+        ]
+        
+        is_followup = (
+            any(text.lower().startswith(i) for i in followup_indicators) or
+            any(p in text.lower().split() for p in context_pronouns)
+        )
+        
+        if is_followup:
+            return True, {
+                "previous_topic": self.conversation_context["current_topic"],
+                "mentioned_entities": list(self.conversation_context["mentioned_entities"]),
+                "last_question": self.conversation_context["last_question"],
+                "last_answer": self.conversation_context["last_answer"]
             }
             
-        except Exception as e:
-            print(f"✗ Error in router: {e}")
-            return {
-                "skill": "education",
-                "intent": "answer_question",
-                "mode": "informative",
-                "parameters": {"question": user_input}
+        return False, {}
+    
+    def _extract_entities(self, text: str) -> set:
+        """Extract important entities from text"""
+        # Simple entity extraction - could be enhanced with NLP
+        common_words = {"what", "where", "when", "why", "how", "is", "are", "the", "a", "an"}
+        words = text.lower().split()
+        return {word for word in words if word not in common_words}
+    
+    def _handle_followup(self, text: str, context: dict) -> Dict:
+        """Handle follow-up questions with context"""
+        return {
+            "skill": "education",
+            "intent": "answer_question",
+            "mode": "follow_up",
+            "parameters": {
+                "question": text,
+                "context": context
             }
+        }
+    
+    def _route_educational_request(self, text: str) -> Dict:
+        """Route educational questions with context"""
+        # Update conversation context
+        self.conversation_context.update({
+            "active": True,
+            "current_topic": self._extract_topic(text),
+            "last_question": text,
+            "last_interaction": time.time()
+        })
+        
+        return {
+            "skill": "education",
+            "intent": "answer_question",
+            "mode": "informative",
+            "parameters": {
+                "question": text,
+                "context": {
+                    "topic": self.conversation_context["current_topic"],
+                    "mentioned_entities": list(self.conversation_context["mentioned_entities"]),
+                    "conversation_history": self.conversation_context["conversation_history"][-3:]  # Last 3 interactions
+                }
+            }
+        }
     
     def _extract_topic(self, text: str) -> str:
         """Extract main topic from question"""

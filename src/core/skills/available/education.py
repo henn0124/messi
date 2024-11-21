@@ -1,34 +1,47 @@
 from typing import Dict
 from openai import AsyncOpenAI
 from ...config import Settings
+import random
 
 class Education:
     def __init__(self):
         self.settings = Settings()
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
     
-    async def handle(self, intent: Dict) -> Dict:
+    async def handle(self, route: Dict) -> Dict:
         """Handle educational questions"""
         try:
-            question = intent.get("parameters", {}).get("question", "")
-            print(f"\n=== Education Handler ===")
-            print(f"Question: '{question}'")
+            question = route["parameters"]["question"]
+            context = route["parameters"].get("context", {})
             
-            # Get child-friendly answer using GPT-4o
+            # If response is from cache, add context-aware prefix
+            if route.get("from_cache"):
+                prefix = self._get_cache_prefix(context)
+                return {
+                    "text": f"{prefix} {route['text']}",
+                    "context": "education",
+                    "auto_continue": False
+                }
+            
+            # Create prompt with context
+            prompt = f"""Question: {question}
+Previous topic: {context.get('previous_topic', 'none')}
+Related entities: {', '.join(context.get('mentioned_entities', []))}
+Previous question: {context.get('last_question', 'none')}
+
+Provide a child-friendly answer that:
+1. Builds on previous knowledge if related
+2. Makes connections to familiar concepts
+3. Encourages further curiosity
+"""
+
             response = await self.client.chat.completions.create(
                 model=self.settings.OPENAI_CHAT_MODEL,
                 messages=[
-                    {"role": "system", "content": """
-                        You are a friendly teacher for children aged 4-12.
-                        Provide simple, clear, and engaging answers.
-                        Use age-appropriate language and examples.
-                        Keep responses brief but informative.
-                        Add a fun fact when relevant.
-                    """},
+                    {"role": "system", "content": prompt},
                     {"role": "user", "content": question}
                 ],
-                temperature=0.7,
-                max_tokens=200  # Keep answers concise
+                temperature=0.7
             )
             
             answer = response.choices[0].message.content
@@ -46,6 +59,16 @@ class Education:
                 "text": "I'm not sure about that. Would you like to hear a story instead?",
                 "context": "error"
             }
+
+    def _get_cache_prefix(self, context: Dict) -> str:
+        """Get context-aware prefix for cached responses"""
+        prefixes = [
+            "I remember this one!",
+            "As we discussed before,",
+            "Let me tell you again about this.",
+            "This is interesting to revisit:"
+        ]
+        return random.choice(prefixes)
 
 skill_manifest = {
     "name": "education",

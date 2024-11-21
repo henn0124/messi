@@ -231,51 +231,36 @@ class BedtimeStory:
             print(f"Full error details: {str(e)}")
             return None
 
-    async def generate_chapter(self, chapter_data: Dict, previous_events: list) -> str:
+    async def generate_chapter(self, chapter: Dict, previous_events: list) -> str:
         """Generate a specific chapter based on the story arc"""
         try:
-            system_prompt = """
-            You are narrating an interactive children's bedtime story.
-            Create engaging, soothing content that:
-            - Uses rich, descriptive language
-            - Maintains a gentle, calming tone
-            - Includes natural pauses for interaction
-            - Takes about 5 minutes to read aloud
-            
-            Include these interactive elements:
-            1. Gentle sound effects in parentheses (like "(swoosh)")
-            2. Pause points marked with [...] for natural interaction
-            3. Decision points marked with {CHOICE} where child input is needed
-            4. Imagination prompts marked with {IMAGINE}
-            5. Simple puzzles or riddles marked with {PUZZLE}
-            
-            Each chapter should have 2-3 interaction points where the child's input
-            can influence the story direction.
-            """
-            
-            # Generate the chapter content
+            # Create context-aware prompt
+            prompt = f"""Chapter theme: {chapter['theme']}
+Previous events: {', '.join(previous_events)}
+Child's engagement level: {self.state.engagement_level}
+Preferred elements: {self.memory.get_favorite_elements()}
+Current time: {time.strftime('%H:%M')}
+
+Generate a chapter that:
+1. Maintains continuity with previous events
+2. Includes elements the child has enjoyed
+3. Adjusts pacing based on engagement
+4. Is appropriate for bedtime
+"""
+
             response = await self.client.chat.completions.create(
-                model="gpt-4-1106-preview",  # Updated to latest GPT-4 model
+                model=self.settings.OPENAI_CHAT_MODEL,
                 messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"""
-                        Chapter: {chapter_data['title']}
-                        Summary: {chapter_data['summary']}
-                        Key Events: {', '.join(chapter_data['key_events'])}
-                        Previous Events: {', '.join(previous_events)}
-                        
-                        Include these interaction points:
-                        {json.dumps(chapter_data['interaction_points'])}
-                    """}
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": f"Generate chapter: {chapter['title']}"}
                 ],
-                temperature=0.7,
-                max_tokens=4096  # Increased token limit
+                temperature=0.8
             )
             
             chapter_content = response.choices[0].message.content
             
             # Process the content to handle interaction points
-            interaction_points = chapter_data.get('interaction_points', [])
+            interaction_points = chapter.get("interaction_points", [])
             for i, point in enumerate(interaction_points):
                 if f"{{CHOICE_{i+1}}}" in chapter_content:
                     # Replace placeholder with actual interaction
