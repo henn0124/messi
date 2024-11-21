@@ -1,4 +1,4 @@
-Product Requirements Document (PRD)
+Product Requirements Document (PRD) v1
 
 Smart Raspberry Pi Speaker
 
