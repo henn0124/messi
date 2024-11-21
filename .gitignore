@@ -29,10 +29,11 @@ src/content/stories/logs/
 .DS_Store
 Thumbs.db
 
-# Audio files
+# Audio files - but allow versioned assets
+/src/assets/audio/generated/
+/src/assets/audio/cache/
 *.wav
-*.mp3
-*.ogg
+!src/assets/audio/phrases/**/*.wav  # Allow versioned phrase files
 
 # Logs
 *.log

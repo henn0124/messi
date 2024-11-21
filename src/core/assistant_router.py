@@ -36,37 +36,15 @@ class AssistantRouter:
             print(f"Processing request: '{user_input}'")
             print(f"Time of day: {time_of_day}")
             
-            current_time = time.time()
             input_lower = user_input.lower()
             
-            # Check if this is a follow-up question
-            if self.conversation_context["active"]:
-                time_since_last = current_time - self.conversation_context["last_interaction"]
-                if time_since_last < self.conversation_context["follow_up_window"]:
-                    print("✓ Follow-up question detected")
-                    # Add context to the question
-                    return {
-                        "skill": "education",
-                        "intent": "answer_question",
-                        "mode": "follow_up",
-                        "parameters": {
-                            "question": user_input,
-                            "context": {
-                                "previous_question": self.conversation_context["last_question"],
-                                "previous_answer": self.conversation_context["last_answer"],
-                                "topic": self.conversation_context["topic"]
-                            }
-                        }
-                    }
-                else:
-                    # Reset context if follow-up window expired
-                    self._reset_conversation_context()
-            
-            # Story requests
+            # Story requests - handle first
             if any(phrase in input_lower for phrase in ["tell me a story", "story about"]):
-                self._reset_conversation_context()  # New context for story
                 print("✓ Story request detected")
                 theme = input_lower.split("about", 1)[1].strip().rstrip('?') if "about" in input_lower else ""
+                print(f"✓ Story theme: {theme}")
+                
+                # Return story intent without ending conversation
                 return {
                     "skill": "interactive_story",
                     "intent": "tell_story",
@@ -83,7 +61,7 @@ class AssistantRouter:
                     "active": True,
                     "topic": self._extract_topic(input_lower),
                     "last_question": user_input,
-                    "last_interaction": current_time
+                    "last_interaction": time.time()
                 })
                 return {
                     "skill": "education",
@@ -98,7 +76,7 @@ class AssistantRouter:
                 "active": True,
                 "topic": self._extract_topic(input_lower),
                 "last_question": user_input,
-                "last_interaction": current_time
+                "last_interaction": time.time()
             })
             return {
                 "skill": "education",

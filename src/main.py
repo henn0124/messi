@@ -13,6 +13,7 @@ from datetime import datetime
 import json
 import traceback
 import psutil
+from core.conversation_manager import ConversationManager, ConversationState
 
 class SmartSpeaker:
     def __init__(self):
@@ -24,6 +25,7 @@ class SmartSpeaker:
         self.story = BedtimeStory()
         self.led = LEDManager()
         self.education = Education()
+        self.conversation_manager = ConversationManager()
         
         # Setup logging
         self.conversation_log = []
@@ -95,8 +97,17 @@ class SmartSpeaker:
             await self.handle_error()
     
     async def handle_command(self, text: str):
-        """Handle command and potential follow-ups"""
+        """Handle command with conversation management"""
         try:
+            if self.conversation_manager.get_state() == ConversationState.ENDED:
+                await self.conversation_manager.start_conversation()
+            
+            # Process the interaction
+            should_continue = await self.conversation_manager.process_interaction(text)
+            if not should_continue:
+                await self.led.set_state(LEDState.READY)
+                return
+            
             # Start routing and response generation in parallel
             route_task = asyncio.create_task(self.router.route_request(text))
             await self.led.set_state(LEDState.PROCESSING)
@@ -104,8 +115,13 @@ class SmartSpeaker:
             # Get route result
             route = await route_task
             
-            if route["skill"] == "education":
-                # Handle education response
+            if route["skill"] == "interactive_story":
+                await self.led.set_state(LEDState.STORY)
+                await self.handle_story(route)
+                # Don't end conversation after story starts
+                await self.listen_for_followup()
+                
+            elif route["skill"] == "education":
                 response = await self.education.handle(route)
                 if response:
                     await self.led.set_state(LEDState.SPEAKING)
@@ -117,52 +133,40 @@ class SmartSpeaker:
                         await self.audio.play_audio(audio_response)
                         
                     # Start listening for follow-up
-                    self.in_conversation = True
-                    self.last_response_time = time.time()
-                    
-                    # Listen for follow-up
                     await self.listen_for_followup()
             
-            elif route["skill"] == "interactive_story":
-                # Story mode - use existing story handling
-                await self.handle_story(route)
-                
         except Exception as e:
             print(f"✗ Error in command handling: {e}")
             await self.handle_error()
     
     async def listen_for_followup(self):
-        """Listen for follow-up questions without wake word"""
+        """Listen for follow-up without wake word"""
         try:
-            while self.in_conversation:
-                # Check if conversation has timed out
-                if time.time() - self.last_response_time > self.conversation_timeout:
+            start_time = time.time()
+            
+            while True:
+                current_time = time.time()
+                if current_time - start_time > self.conversation_timeout:
                     print("\n✓ Conversation timeout - returning to wake word mode")
-                    self.in_conversation = False
+                    await self.conversation_manager.end_conversation("timeout")
                     await self.led.set_state(LEDState.READY)
                     break
                 
                 print("\n=== Listening for follow-up ===")
                 await self.led.set_state(LEDState.LISTENING)
                 
-                # Record and process follow-up
                 command_audio = await self.audio._record_command()
                 if command_audio:
                     text = await self.speech.process_audio(command_audio)
                     if text:
                         await self.handle_command(text)
-                    else:
-                        # No speech detected - continue listening
-                        continue
-                else:
-                    # No audio recorded - check timeout and continue if still in window
-                    continue
+                        start_time = time.time()  # Reset timeout
                 
                 await asyncio.sleep(0.1)
                 
         except Exception as e:
             print(f"✗ Error in follow-up listening: {e}")
-            self.in_conversation = False
+            await self.conversation_manager.end_conversation("error")
             await self.led.set_state(LEDState.READY)
     
     async def handle_error(self):
@@ -184,7 +188,7 @@ class SmartSpeaker:
             await self.log_interaction("story_response", response['text'], {
                 "chapter": getattr(self.story, 'current_chapter', 0),
                 "context": response.get('context'),
-                "auto_continue": True  # Force auto-continue for all chapters
+                "auto_continue": True
             })
             
             # Play initial chapter
@@ -198,30 +202,23 @@ class SmartSpeaker:
                     await self.audio.play_audio(audio_response)
                 self.is_speaking = False
                 
-                # Automatically continue through all chapters
+                # Keep conversation active during story
+                self.conversation_manager.state = ConversationState.ACTIVE
+                
+                # Continue with story
                 while not self.audio.interrupt_event.is_set():
-                    # Short pause between chapters
                     await asyncio.sleep(2)
                     
-                    # Check for interruption
                     if self.audio.interrupt_event.is_set():
-                        await self.log_interaction("story_interrupted", "Story interrupted by wake word")
                         break
                     
-                    # Get next chapter
                     response = await self.story.handle({"text": "", "auto_continue": True})
                     
-                    # Check if story is complete
                     if response.get('story_complete', False):
-                        await self.log_interaction("story_complete", "Story finished")
                         break
                     
-                    await self.log_interaction("story_continuation", response['text'], {
-                        "chapter": getattr(self.story, 'current_chapter', 0),
-                        "auto_continue": True
-                    })
+                    await self.log_interaction("story_continuation", response['text'])
                     
-                    # Play chapter
                     self.is_speaking = True
                     audio_response = await self.tts.synthesize(
                         response['text'], 
