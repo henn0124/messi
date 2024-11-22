@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from pathlib import Path
 from typing import Optional
+from pydantic import validator
 
 class Settings(BaseSettings):
     # Project paths
@@ -15,8 +16,15 @@ class Settings(BaseSettings):
     PICOVOICE_ACCESS_KEY: str
     
     # Audio Device Settings (loaded from .env)
-    AUDIO_INPUT_DEVICE_INDEX: int = 1  # USB PnP Sound Device
-    AUDIO_OUTPUT_DEVICE_INDEX: int = 0  # bcm2835 Headphones
+    AUDIO_INPUT_DEVICE_INDEX: int
+    AUDIO_OUTPUT_DEVICE_INDEX: int
+    
+    @validator('AUDIO_INPUT_DEVICE_INDEX', 'AUDIO_OUTPUT_DEVICE_INDEX', pre=True)
+    def parse_device_index(cls, v):
+        if isinstance(v, str):
+            # Strip any comments and whitespace
+            v = v.split('#')[0].strip()
+        return int(v)
     
     # Audio Processing Settings
     SAMPLE_RATE: int = 16000

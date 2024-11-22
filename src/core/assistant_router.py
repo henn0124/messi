@@ -17,7 +17,7 @@ class AssistantRouter:
             "subtopics": [],
             "last_question": None,
             "last_answer": None,
-            "mentioned_entities": set(),  # Track mentioned places, things, people
+            "mentioned_entities": [],
             "follow_up_window": 10.0,
             "last_interaction": 0,
             "conversation_history": []    # Keep last N interactions
@@ -102,14 +102,18 @@ If referring to cached information, acknowledge it naturally.
             print("\n=== Assistant Router ===")
             print(f"Processing request: '{user_input}'")
             
-            # Check cache with context
+            # Convert mentioned_entities to list before caching
+            context_for_cache = self.conversation_context.copy()
+            context_for_cache["mentioned_entities"] = list(self.conversation_context["mentioned_entities"])
+            
+            # Check cache with modified context
             cached_response = await self.response_cache.get_cached_response(
                 user_input, 
                 {
-                    "topic": self.conversation_context["current_topic"],
-                    "mentioned_entities": list(self.conversation_context["mentioned_entities"]),
+                    "topic": context_for_cache["current_topic"],
+                    "mentioned_entities": context_for_cache["mentioned_entities"],
                     "time_of_day": time_of_day,
-                    "last_question": self.conversation_context["last_question"]
+                    "last_question": context_for_cache["last_question"]
                 }
             )
             
