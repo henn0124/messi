@@ -1,0 +1,19 @@
+=== Microphone Calibration Results ===
+Date: 2024-11-21 22:23:10
+
+Raw Metrics:
+Ambient Noise Mean: 40.2
+Ambient Noise Std Dev: 19.6
+Speech Level Mean: 95.6
+Speech Level Std Dev: 161.6
+Peak Level: 4009.0
+Average Detection Time: 3.04s
+
+Add these to your .env file:
+# Wake Word Settings (calibrated)
+WAKE_WORD_MIN_VOLUME=150
+AUDIO_SILENCE_THRESHOLD=100
+WAKE_WORD_MAX_VOLUME=4810.80
+WAKE_WORD_THRESHOLD=0.85
+WAKE_WORD_DETECTION_WINDOW=2.43
+WAKE_WORD_CONSECUTIVE_FRAMES=2

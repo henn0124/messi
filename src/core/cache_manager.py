@@ -3,17 +3,18 @@ import json
 from pathlib import Path
 import time
 import hashlib
+import aiofiles
 
 class ResponseCache:
-    def __init__(self):
+    def __init__(self, max_size: int = 1024 * 1024):
         self.cache_dir = Path("src/cache/responses")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         
         # Cache configuration
         self.config = {
             "max_age": 24 * 60 * 60,  # 24 hours in seconds
-            "max_size": 1000,         # Maximum number of cached responses
-            "min_similarity": 0.85,    # Threshold for similar questions
+            "max_size": max_size,      # Maximum cache size in bytes
+            "min_similarity": 0.85     # Threshold for similar questions
         }
         
         # Cache statistics
@@ -22,169 +23,89 @@ class ResponseCache:
             "misses": 0,
             "similar_matches": 0
         }
-        
-        # Context tracking for better matches
-        self.context_history = []
     
-    def _generate_cache_key(self, query: str, context: Dict = None) -> str:
-        """Generate a unique cache key from query and context"""
-        # Normalize query
-        normalized_query = query.lower().strip()
-        
-        # Include relevant context in key generation
-        if context:
-            context_str = json.dumps({
-                k: v for k, v in context.items() 
-                if k in ['topic', 'previous_question', 'mentioned_entities']
-            }, sort_keys=True)
-        else:
-            context_str = ""
-        
-        # Generate hash
-        key_string = f"{normalized_query}:{context_str}"
-        return hashlib.sha256(key_string.encode()).hexdigest()
-    
-    async def get_cached_response(self, query: str, context: Dict = None) -> Optional[Dict]:
-        """Get cached response if available and valid"""
-        cache_key = self._generate_cache_key(query, context)
-        cache_file = self.cache_dir / f"{cache_key}.json"
-        
-        if cache_file.exists():
-            try:
-                with open(cache_file, 'r') as f:
-                    cached_data = json.load(f)
-                
-                # Check if cache is still valid
-                if time.time() - cached_data['timestamp'] < self.config['max_age']:
-                    self.stats['hits'] += 1
-                    print("✓ Cache hit!")
-                    return cached_data['response']
-                
-                # Check for similar questions in context
-                if context and self._check_similar_context(query, context, cached_data):
-                    self.stats['similar_matches'] += 1
-                    print("✓ Similar context match!")
-                    return self._adapt_response(cached_data['response'], context)
-            
-            except Exception as e:
-                print(f"Error reading cache: {e}")
-        
-        self.stats['misses'] += 1
-        return None
-    
-    async def cache_response(self, query: str, response: Dict, context: Dict = None):
-        """Cache a new response"""
+    async def get(self, key: str) -> Optional[Dict]:
+        """Get cached response"""
         try:
-            cache_key = self._generate_cache_key(query, context)
+            cache_key = self._generate_cache_key(key)
+            cache_file = self.cache_dir / f"{cache_key}.json"
             
-            # Convert sets to lists for JSON serialization
-            if context and "mentioned_entities" in context:
-                context = dict(context)  # Make a copy
-                context["mentioned_entities"] = list(context["mentioned_entities"])
+            if cache_file.exists():
+                async with aiofiles.open(cache_file, 'r') as f:
+                    content = await f.read()
+                    data = json.loads(content)
+                    
+                    # Check if cache is still valid
+                    if time.time() - data['timestamp'] < self.config['max_age']:
+                        self.stats['hits'] += 1
+                        return data['response']
             
-            cache_data = {
-                'query': query,
-                'response': response,
-                'context': context,
+            self.stats['misses'] += 1
+            return None
+            
+        except Exception as e:
+            print(f"Cache get error: {e}")
+            return None
+    
+    async def set(self, key: str, value: Dict):
+        """Set cache value"""
+        try:
+            cache_key = self._generate_cache_key(key)
+            cache_file = self.cache_dir / f"{cache_key}.json"
+            
+            data = {
+                'key': key,
+                'response': value,
                 'timestamp': time.time()
             }
             
-            # Ensure all sets in the response are converted to lists
-            cache_data = self._convert_sets_to_lists(cache_data)
-            
-            cache_file = self.cache_dir / f"{cache_key}.json"
-            with open(cache_file, 'w') as f:
-                json.dump(cache_data, f)
-            
-            # Maintain cache size limit
+            async with aiofiles.open(cache_file, 'w') as f:
+                await f.write(json.dumps(data))
+                
             await self._cleanup_old_cache()
             
         except Exception as e:
-            print(f"Error caching response: {e}")
+            print(f"Cache set error: {e}")
     
-    def _convert_sets_to_lists(self, data):
-        """Recursively convert sets to lists in a dictionary"""
-        if isinstance(data, dict):
-            return {key: self._convert_sets_to_lists(value) for key, value in data.items()}
-        elif isinstance(data, list):
-            return [self._convert_sets_to_lists(item) for item in data]
-        elif isinstance(data, set):
-            return list(data)
-        else:
-            return data
-    
-    def _check_similar_context(self, query: str, current_context: Dict, cached_data: Dict) -> bool:
-        """Check if cached response is from similar context"""
-        if not cached_data.get('context'):
-            return False
-            
-        cached_context = cached_data['context']
-        
-        # Check topic similarity
-        if current_context.get('topic') == cached_context.get('topic'):
-            return True
-            
-        # Check entity overlap
-        current_entities = set(current_context.get('mentioned_entities', []))
-        cached_entities = set(cached_context.get('mentioned_entities', []))
-        entity_overlap = len(current_entities & cached_entities) / len(current_entities | cached_entities)
-        
-        return entity_overlap > self.config['min_similarity']
-    
-    def _adapt_response(self, cached_response: Dict, new_context: Dict) -> Dict:
-        """Adapt cached response to new context"""
-        # Clone response to avoid modifying cache
-        adapted = dict(cached_response)
-        
-        # Update context-specific elements
-        if 'context' in adapted:
-            adapted['context'].update(new_context)
-        
-        return adapted
+    def _generate_cache_key(self, key: str) -> str:
+        """Generate cache key from input"""
+        return hashlib.sha256(key.encode()).hexdigest()
     
     async def _cleanup_old_cache(self):
-        """Remove old cache entries"""
+        """Clean up old cache entries"""
         try:
-            cache_files = list(self.cache_dir.glob("*.json"))
-            if len(cache_files) > self.config['max_size']:
-                # Sort by modification time
-                cache_files.sort(key=lambda x: x.stat().st_mtime)
-                
-                # Remove oldest files
-                for file in cache_files[:-self.config['max_size']]:
-                    file.unlink()
-                    
+            current_time = time.time()
+            for cache_file in self.cache_dir.glob("*.json"):
+                if current_time - cache_file.stat().st_mtime > self.config['max_age']:
+                    cache_file.unlink()
         except Exception as e:
-            print(f"Error cleaning cache: {e}") 
+            print(f"Cache cleanup error: {e}")
     
-    async def get_relevant_context(self, query: str, current_topic: str, entities: set) -> list:
+    async def get_relevant_context(self, query: str, current_topic: str = None, entities: set = None) -> list:
         """Get relevant cached context for the current query"""
-        relevant_context = []
-        
         try:
+            relevant_context = []
+            
             # Scan cache directory
-            cache_files = list(self.cache_dir.glob("*.json"))
+            for cache_file in self.cache_dir.glob("*.json"):
+                try:
+                    async with aiofiles.open(cache_file, 'r') as f:
+                        content = await f.read()
+                        cached_data = json.loads(content)
+                        
+                        # Check relevance
+                        if self._is_relevant(query, cached_data, current_topic, entities):
+                            relevant_context.append({
+                                "topic": cached_data.get("topic", "unknown"),
+                                "text": cached_data.get("response", {}).get("text", ""),
+                                "timestamp": cached_data.get("timestamp", 0)
+                            })
+                except Exception as e:
+                    print(f"Error reading cache file {cache_file}: {e}")
+                    continue
             
-            for cache_file in cache_files:
-                with open(cache_file, 'r') as f:
-                    cached_data = json.load(f)
-                
-                # Check relevance
-                if self._is_relevant(query, cached_data, current_topic, entities):
-                    relevant_context.append({
-                        "topic": cached_data["context"].get("topic", "unknown"),
-                        "summary": self._create_context_summary(cached_data),
-                        "timestamp": cached_data["timestamp"]
-                    })
-            
-            # Sort by relevance and recency
-            relevant_context.sort(
-                key=lambda x: (
-                    self._calculate_relevance(x, current_topic, entities),
-                    x["timestamp"]
-                ),
-                reverse=True
-            )
+            # Sort by timestamp (most recent first)
+            relevant_context.sort(key=lambda x: x["timestamp"], reverse=True)
             
             # Return top 3 most relevant contexts
             return relevant_context[:3]
@@ -193,49 +114,34 @@ class ResponseCache:
             print(f"Error getting relevant context: {e}")
             return []
     
-    def _is_relevant(self, query: str, cached_data: Dict, current_topic: str, entities: set) -> bool:
+    def _is_relevant(self, query: str, cached_data: Dict, current_topic: str = None, entities: set = None) -> bool:
         """Check if cached data is relevant to current query"""
-        cached_topic = cached_data["context"].get("topic")
-        cached_entities = set(cached_data["context"].get("mentioned_entities", []))
-        
-        # Check topic match
-        if cached_topic and cached_topic == current_topic:
-            return True
+        try:
+            # Check topic match
+            if current_topic and cached_data.get("topic") == current_topic:
+                return True
             
-        # Check entity overlap
-        if cached_entities & entities:
-            return True
+            # Check text similarity
+            cached_text = cached_data.get("response", {}).get("text", "").lower()
+            query = query.lower()
             
-        # Check text similarity (simple word overlap)
-        query_words = set(query.lower().split())
-        cached_words = set(cached_data["query"].lower().split())
-        word_overlap = len(query_words & cached_words) / len(query_words | cached_words)
-        
-        return word_overlap > self.config["min_similarity"]
-    
-    def _create_context_summary(self, cached_data: Dict) -> str:
-        """Create a brief summary of cached response"""
-        response = cached_data["response"]["text"]
-        # Take first sentence or first 100 characters
-        summary = response.split('.')[0] if '.' in response else response[:100]
-        return f"{summary}..."
-    
-    def _calculate_relevance(self, context: Dict, current_topic: str, entities: set) -> float:
-        """Calculate relevance score for sorting"""
-        score = 0.0
-        
-        # Topic match is highest priority
-        if context["topic"] == current_topic:
-            score += 1.0
+            words_query = set(query.split())
+            words_cached = set(cached_text.split())
             
-        # Entity overlap
-        context_entities = set(context.get("entities", []))
-        entity_overlap = len(entities & context_entities) / len(entities | context_entities) if entities else 0
-        score += entity_overlap * 0.5
-        
-        # Recency bonus (within last hour)
-        time_diff = time.time() - context["timestamp"]
-        if time_diff < 3600:  # 1 hour
-            score += 0.3
+            # Calculate word overlap
+            if words_query and words_cached:
+                overlap = len(words_query & words_cached) / len(words_query | words_cached)
+                if overlap > self.config["min_similarity"]:
+                    return True
             
-        return score
+            # Check entity overlap
+            if entities and cached_data.get("entities"):
+                cached_entities = set(cached_data["entities"])
+                if entities & cached_entities:
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"Error checking relevance: {e}")
+            return False

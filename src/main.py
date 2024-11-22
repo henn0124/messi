@@ -1,327 +1,318 @@
+from typing import Optional
 import asyncio
-from core.audio import AudioInterface
-from core.speech import SpeechManager
-from core.tts import TextToSpeech
-from core.skills.available.bedtime_story import BedtimeStory
-from core.assistant_router import AssistantRouter
-from pathlib import Path
-from core.led_manager import LEDManager, LEDState
-from typing import Dict
-from core.skills.available.education import Education
-import time
-from datetime import datetime
-import json
-import traceback
+import numpy as np
+from concurrent.futures import ThreadPoolExecutor
+import gc
 import psutil
-from core.conversation_manager import ConversationManager, ConversationState
+import os
+from pathlib import Path
+import time
+import wave
+import csv
+from datetime import datetime
+import traceback
 
-class SmartSpeaker:
+from core.audio import AudioInterface
+from core.assistant_router import AssistantRouter
+from core.config import Settings
+from core.cache_manager import ResponseCache
+from core.tts import TextToSpeech
+from core.conversation_manager import ConversationManager
+from openai import AsyncOpenAI
+from core.speech import SpeechManager
+from core.audio_processor import AudioProcessor
+
+class ResourceMonitor:
     def __init__(self):
-        print("Initializing Smart Speaker...")
-        self.audio = AudioInterface()
-        self.speech = SpeechManager()
-        self.tts = TextToSpeech()
-        self.router = AssistantRouter()
-        self.story = BedtimeStory()
-        self.led = LEDManager()
-        self.education = Education()
-        self.conversation_manager = ConversationManager()
-        
-        # Setup logging
-        self.conversation_log = []
-        self.log_file = Path("logs") / f"conversation_{int(time.time())}.log"
-        self.log_file.parent.mkdir(exist_ok=True)
-        
-        # Give router access to story skill
-        self.router.story = self.story
-        
-        # Track current state
-        self.current_task = None
-        self.is_speaking = False
-        
-        # Add resource monitoring
-        self.monitor_resources = True
-        self.resource_check_interval = 60  # Check every minute
-        
-        # Add conversation state tracking
-        self.in_conversation = False
-        self.conversation_timeout = 10.0  # Seconds to wait for follow-up
-        self.last_response_time = 0
+        self.start_time = time.time()
+        self.peak_memory_mb = 0
+        self.peak_cpu = 0
+        self.last_print_time = time.time()
+        self.print_interval = 5  # Only update display every 5 seconds
     
-    async def log_interaction(self, interaction_type: str, content: str, metadata: dict = None):
-        """Log an interaction with timestamp"""
-        if metadata is None:
-            metadata = {}
-            
-        timestamp = datetime.now().isoformat()
-        log_entry = {
-            "timestamp": timestamp,
-            "type": interaction_type,
-            "content": content,
-            **metadata
+    @staticmethod
+    def get_minimal_usage():
+        process = psutil.Process()
+        return {
+            'cpu': psutil.cpu_percent(interval=0.1),
+            'memory_mb': process.memory_info().rss / (1024 * 1024),  # Convert to MB
+            'thread_count': process.num_threads()
         }
-        
-        # Print to console
-        print(f"\n[{timestamp}] {interaction_type}:")
-        print(f"Content: {content}")
-        if metadata:
-            print("Metadata:", json.dumps(metadata, indent=2))
-        
-        # Save to log file
-        self.conversation_log.append(log_entry)
-        with open(self.log_file, 'a') as f:
-            f.write(json.dumps(log_entry) + '\n')
     
-    async def initialize(self):
-        """Initialize all components"""
-        success = await self.audio.initialize()
-        if not success:
-            raise RuntimeError("Failed to initialize audio interface!")
+    def update_peaks(self, usage):
+        """Update peak values"""
+        self.peak_cpu = max(self.peak_cpu, usage['cpu'])
+        self.peak_memory_mb = max(self.peak_memory_mb, usage['memory_mb'])
+    
+    def print_usage(self, label: str = ""):
+        """Print current and peak resource usage"""
+        usage = self.get_minimal_usage()
+        self.update_peaks(usage)
+        
+        current_time = time.time()
+        # Only print if it's been more than print_interval seconds
+        if current_time - self.last_print_time >= self.print_interval:
+            print(f"\nSystem Resources {label}:")
+            print(f"Current: CPU: {usage['cpu']:>3.1f}% | Memory: {usage['memory_mb']:>5.1f}MB | Threads: {usage['thread_count']}")
+            print(f"Peak:    CPU: {self.peak_cpu:>3.1f}% | Memory: {self.peak_memory_mb:>5.1f}MB")
+            print(f"Uptime:  {(current_time - self.start_time):.0f}s")
+            self.last_print_time = current_time
+
+    async def monitor_critical_thresholds(self):
+        """Monitor critical thresholds with peak tracking"""
+        while True:
+            usage = self.get_minimal_usage()
+            self.update_peaks(usage)
             
-        # Remove assistant initialization
-        # await self.router._init_assistant()
+            # Alert on critical conditions
+            if usage['cpu'] > 90 or usage['memory_mb'] > 400:
+                print("\n⚠️  High Resource Usage:")
+                print(f"Current: CPU: {usage['cpu']:>3.1f}% | Memory: {usage['memory_mb']:>5.1f}MB")
+                print(f"Peak:    CPU: {self.peak_cpu:>3.1f}% | Memory: {self.peak_memory_mb:>5.1f}MB")
+            
+            await asyncio.sleep(5)
+
+class MessiAssistant:
+    def __init__(self):
+        self.settings = Settings()
+        self.executor = ThreadPoolExecutor(
+            max_workers=max(1, psutil.cpu_count(logical=False) - 1),
+            thread_name_prefix="messi_worker"
+        )
         
-        print("Smart Speaker initialized successfully")
-    
-    async def handle_wake_word(self, audio_data: bytes):
+        # Initialize components with resource limits
+        self.chunk_size = 32 * 1024  # 32KB audio chunks
+        self.max_buffer_size = 256 * 1024  # 256KB max buffer
+        self.cache_size_limit = 1024 * 1024  # 1MB cache limit
+        
+        # Initialize resource monitor
+        self.resource_monitor = ResourceMonitor()
+        
+        # Component initialization
+        self.resource_monitor.print_usage("Init")
+        self.audio = AudioInterface()
+        self.router = AssistantRouter()
+        self.cache = ResponseCache(max_size=self.cache_size_limit)
+        self.tts = TextToSpeech()
+        self.conversation = ConversationManager()
+        self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
+        
+        # Audio processing parameters
+        self.SAMPLE_RATE = 16000
+        self.MIN_AUDIO_LENGTH = 0.5
+        self.MIN_AUDIO_LEVEL = 50  # Lowered from 100
+        self.MAX_AUDIO_LENGTH = 30.0
+        self.TARGET_RMS = 2000  # Target RMS level for normalization
+        
+        self.speech_manager = SpeechManager()
+        self.audio_processor = AudioProcessor()
+
+    async def _process_audio(self, audio_data: bytes) -> Optional[str]:
+        """Process audio using centralized processor"""
         try:
-            # Process speech to text
-            text = await self.speech.process_audio(audio_data)
-            if not text:
-                return
+            # Process audio
+            processed_audio, metrics = await self.audio_processor.process_input(audio_data)
+            if processed_audio is None:
+                return None
+
+            # Save for Whisper
+            wav_path = await self.audio_processor.save_wav(
+                processed_audio,
+                AudioProcessor.SETTINGS["sample_rates"]["processing"],
+                "whisper_input.wav"
+            )
             
-            await self.handle_command(text)
-            
-        except Exception as e:
-            print(f"✗ Error: {e}")
-            await self.handle_error()
-    
-    async def handle_command(self, text: str):
-        """Handle command with conversation management"""
-        try:
-            if self.conversation_manager.get_state() == ConversationState.ENDED:
-                await self.conversation_manager.start_conversation()
-            
-            # Process the interaction
-            should_continue = await self.conversation_manager.process_interaction(text)
-            if not should_continue:
-                print("Conversation ended by user")
-                await self.led.set_state(LEDState.READY)
-                # Play goodbye response
-                goodbye_response = await self.tts.synthesize(
-                    "Goodbye! Let me know if you need anything else.",
-                    "farewell"
-                )
-                if goodbye_response:
-                    await self.audio.play_audio(goodbye_response)
-                return
-            
-            # Start routing and response generation in parallel
-            route_task = asyncio.create_task(self.router.route_request(text))
-            await self.led.set_state(LEDState.PROCESSING)
-            
-            # Get route result
-            route = await route_task
-            
-            if route["skill"] == "interactive_story":
-                await self.led.set_state(LEDState.STORY)
-                await self.handle_story(route)
-                # Don't end conversation after story starts
-                await self.listen_for_followup()
-                
-            elif route["skill"] == "education":
-                response = await self.education.handle(route)
-                if response:
-                    await self.led.set_state(LEDState.SPEAKING)
-                    audio_response = await self.tts.synthesize(
-                        response['text'],
-                        response.get('context', 'education')
+            if wav_path:
+                # Process with Whisper
+                with open(wav_path, "rb") as audio_file:
+                    response = await self.client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=audio_file,
+                        response_format="text",
+                        language="en",
+                        temperature=0.0
                     )
-                    if audio_response:
-                        await self.audio.play_audio(audio_response)
-                        
-                    # Start listening for follow-up
-                    await self.listen_for_followup()
+                
+                # Cleanup
+                wav_path.unlink()
+                return response if response else None
+            
+            return None
             
         except Exception as e:
-            print(f"✗ Error in command handling: {e}")
-            await self.handle_error()
-    
-    async def listen_for_followup(self):
-        """Listen for follow-up without wake word"""
+            print(f"Audio processing error: {e}")
+            return None
+
+    async def _handle_wake_word(self, audio_data: bytes):
+        """Handle wake word with speech processing"""
         try:
-            start_time = time.time()
+            print("\n▶ Processing speech...")
+            
+            # Process through Whisper
+            text = await self.speech_manager.process_audio(audio_data)
+            
+            if text:
+                print(f"\n✓ Recognized Text ({len(text)} chars):")
+                print(f"'{text}'")
+                
+                print("\n▶ Processing request...")
+                response = await self._handle_request(text)
+                if response:
+                    print("\n▶ Generating response...")
+                    await self._play_response(response)
+                    
+        except Exception as e:
+            print(f"Error handling wake word: {e}")
+            traceback.print_exc()
+
+    async def _cleanup(self):
+        """Clean up resources with monitoring"""
+        try:
+            self.resource_monitor.print_usage("Starting Cleanup")
+            
+            # Stop audio processing
+            await self.audio.stop()
+            
+            # Clean up executor
+            self.executor.shutdown(wait=True)
+            
+            # Clear caches
+            await self.cache.clear()
+            
+            # End conversation
+            await self.conversation.end_conversation()
+            
+            # Force garbage collection
+            gc.collect()
+            
+            self.resource_monitor.print_usage("Cleanup Complete")
+            
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+
+    async def run(self):
+        """Main loop with peak tracking"""
+        try:
+            print("\nStarting Messi Assistant...")
+            self.resource_monitor.print_usage("Startup")
+            
+            # Start monitoring task here, inside the event loop
+            monitor_task = asyncio.create_task(
+                self.resource_monitor.monitor_critical_thresholds()
+            )
+            
+            # Initialize audio
+            await self.audio.initialize()
+            
+            # Start wake word detection
+            await self.audio.start_wake_word_detection(self._handle_wake_word)
+            
+            self.resource_monitor.print_usage("Initialization Complete")
+            print("\nListening for wake word...")
             
             while True:
-                current_time = time.time()
-                if current_time - start_time > self.conversation_timeout:
-                    print("\n✓ Conversation timeout - returning to wake word mode")
-                    await self.conversation_manager.end_conversation("timeout")
-                    await self.led.set_state(LEDState.READY)
-                    break
+                await asyncio.sleep(5)
+                self.resource_monitor.print_usage("Running")
                 
-                print("\n=== Listening for follow-up ===")
-                await self.led.set_state(LEDState.LISTENING)
-                
-                command_audio = await self.audio._record_command()
-                if command_audio:
-                    text = await self.speech.process_audio(command_audio)
-                    if text:
-                        await self.handle_command(text)
-                        start_time = time.time()  # Reset timeout
-                
-                await asyncio.sleep(0.1)
-                
+        except KeyboardInterrupt:
+            print("\nShutting down gracefully...")
         except Exception as e:
-            print(f"✗ Error in follow-up listening: {e}")
-            await self.conversation_manager.end_conversation("error")
-            await self.led.set_state(LEDState.READY)
-    
-    async def handle_error(self):
-        """Handle errors consistently"""
-        await self.led.set_state(LEDState.ERROR)
-        error_response = await self.tts.synthesize(
-            "I'm sorry, I had trouble with that. Could you try again?",
-            "error"
-        )
-        if error_response:
-            await self.audio.play_audio(error_response)
-        await self.led.set_state(LEDState.READY)
-    
-    async def handle_story(self, route: Dict):
-        """Handle story interaction with interrupt support"""
-        try:
-            # Get initial response
-            response = await self.story.handle(route)
-            await self.log_interaction("story_response", response['text'], {
-                "chapter": getattr(self.story, 'current_chapter', 0),
-                "context": response.get('context'),
-                "auto_continue": True
-            })
-            
-            # Play initial chapter
-            if not self.audio.interrupt_event.is_set():
-                self.is_speaking = True
-                audio_response = await self.tts.synthesize(
-                    response['text'], 
-                    response.get('context', 'storytelling')
-                )
-                if audio_response:
-                    await self.audio.play_audio(audio_response)
-                self.is_speaking = False
-                
-                # Keep conversation active during story
-                self.conversation_manager.state = ConversationState.ACTIVE
-                
-                # Continue with story
-                while not self.audio.interrupt_event.is_set():
-                    await asyncio.sleep(2)
-                    
-                    if self.audio.interrupt_event.is_set():
-                        break
-                    
-                    response = await self.story.handle({"text": "", "auto_continue": True})
-                    
-                    if response.get('story_complete', False):
-                        break
-                    
-                    await self.log_interaction("story_continuation", response['text'])
-                    
-                    self.is_speaking = True
-                    audio_response = await self.tts.synthesize(
-                        response['text'], 
-                        response.get('context', 'storytelling')
-                    )
-                    if audio_response:
-                        await self.audio.play_audio(audio_response)
-                    self.is_speaking = False
-            
-            await self.led.set_state(LEDState.READY)
-            
-        except asyncio.CancelledError:
-            print("Story handling cancelled")
-            await self.log_interaction("story_cancelled", "Story handling cancelled")
-            await self.led.set_state(LEDState.READY)
-        except Exception as e:
-            print(f"Error in story handling: {e}")
-            await self.log_interaction("error", str(e), {
-                "location": "story_handler",
-                "traceback": traceback.format_exc()
-            })
-            await self.led.set_state(LEDState.ERROR)
-    
-    async def monitor_system_resources(self):
-        """Monitor system resources"""
-        while self.monitor_resources:
-            try:
-                # Get CPU usage
-                cpu_percent = psutil.cpu_percent(interval=1)
-                # Get memory usage
-                memory = psutil.virtual_memory()
-                
-                print(f"\nSystem Resources:")
-                print(f"CPU Usage: {cpu_percent}%")
-                print(f"Memory Usage: {memory.percent}%")
-                
-                if cpu_percent > 80 or memory.percent > 80:
-                    print("⚠️ High resource usage detected!")
-                    
-                await asyncio.sleep(self.resource_check_interval)
-                
-            except Exception as e:
-                print(f"Error monitoring resources: {e}")
-                await asyncio.sleep(self.resource_check_interval)
-    
-    async def run(self):
-        """Main run loop"""
-        try:
-            print("\nStarting bedtime story assistant...")
-            print("Say 'hey messy' to wake me up, then ask for a story!")
-            
-            await self.led.set_state(LEDState.READY)
-            
-            # Start monitoring but don't await it
-            await self.audio.start_monitoring(self.handle_wake_word)
-            
-            # Start resource monitoring
-            monitor_task = asyncio.create_task(self.monitor_system_resources())
-            
-            try:
-                # Keep the main loop running
-                while True:
-                    await asyncio.sleep(0.1)
-            except KeyboardInterrupt:
-                print("\nStopping bedtime story assistant...")
-            finally:
-                # Clean up tasks
-                self.monitor_resources = False
-                monitor_task.cancel()
-                try:
-                    await monitor_task
-                except asyncio.CancelledError:
-                    pass
-            
-        except Exception as e:
-            print(f"\nError: {e}")
+            print(f"Fatal error in main loop: {e}")
         finally:
-            self.cleanup()
-    
-    def cleanup(self):
-        """Clean up resources"""
-        self.audio.cleanup()
-        self.led.cleanup()
+            self.resource_monitor.print_usage("Cleanup")
+            await self._cleanup()
 
-async def main():
-    """Application entrypoint"""
-    try:
-        speaker = SmartSpeaker()
-        await speaker.initialize()
-        await speaker.run()
-    except Exception as e:
-        print(f"Fatal error: {e}")
-        return 1
-    return 0
+    async def speech_to_text(self, audio_data: bytes) -> Optional[str]:
+        """Convert speech to text with resource monitoring"""
+        try:
+            self.resource_monitor.print_usage("Speech-to-Text Start")
+            
+            # Create temporary WAV file
+            temp_path = Path("temp_audio.wav")
+            with wave.open(str(temp_path), 'wb') as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(16000)
+                wav_file.writeframes(audio_data)
+            
+            # Send to Whisper API
+            with open(temp_path, "rb") as audio_file:
+                transcript = await self.client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=audio_file,
+                    response_format="text",
+                    language="en"
+                )
+            
+            # Clean up
+            temp_path.unlink()
+            
+            self.resource_monitor.print_usage("Speech-to-Text Complete")
+            return transcript
+            
+        except Exception as e:
+            print(f"Speech-to-text error: {e}")
+            return None
+
+    async def _handle_request(self, text: str) -> Optional[dict]:
+        """Handle user request with resource monitoring"""
+        try:
+            self.resource_monitor.print_usage("Request Processing Start")
+            
+            # Check cache first
+            cached = await self.cache.get(text)
+            if cached:
+                print("\nUsing cached response")
+                return cached
+            
+            # Process request through router
+            print("\n▶ Routing request...")
+            response = await self.router.route_request(text)
+            
+            # Cache result if not too large
+            if response and len(str(response)) < self.cache_size_limit:
+                await self.cache.set(text, response)
+            
+            self.resource_monitor.print_usage("Request Processing Complete")
+            return response
+            
+        except Exception as e:
+            print(f"Request handling error: {e}")
+            self.resource_monitor.print_usage("Request Processing Error")
+            return None
+
+    async def _play_response(self, response: dict):
+        """Play response with resource monitoring"""
+        try:
+            self.resource_monitor.print_usage("Response Generation")
+            
+            if not response or not response.get("text"):
+                print("No response to play")
+                return
+                
+            print(f"\nAssistant: {response['text']}")
+            
+            # Generate speech
+            audio_data = await self.tts.synthesize(response["text"])
+            if not audio_data:
+                print("Failed to generate speech")
+                return
+            
+            # Play audio
+            print("\n▶ Playing response...")
+            await self.audio.play_audio_chunk(audio_data)
+            
+            self.resource_monitor.print_usage("Response Complete")
+            
+        except Exception as e:
+            print(f"Error playing response: {e}")
+            traceback.print_exc()
 
 if __name__ == "__main__":
-    exit_code = asyncio.run(main())
-    exit(exit_code) 
+    assistant = MessiAssistant()
+    try:
+        asyncio.run(assistant.run())
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+    except Exception as e:
+        print(f"Fatal error: {e}") 

@@ -1,62 +1,69 @@
 from pydantic_settings import BaseSettings
 from pathlib import Path
-from typing import Optional
-from pydantic import validator
 
 class Settings(BaseSettings):
-    # Project paths
-    BASE_DIR: Path = Path(__file__).parent.parent.parent
-    MODELS_DIR: Path = BASE_DIR / "models"
-    SKILLS_DIR: Path = BASE_DIR / "skills"
-    CACHE_DIR: Path = BASE_DIR / "cache"
-    TEMP_DIR: Path = BASE_DIR / "temp"
-    
-    # API Keys (loaded directly from .env)
+    # API Keys
     OPENAI_API_KEY: str
     PICOVOICE_ACCESS_KEY: str
     
-    # Audio Device Settings (loaded from .env)
-    AUDIO_INPUT_DEVICE_INDEX: int
-    AUDIO_OUTPUT_DEVICE_INDEX: int
-    
-    @validator('AUDIO_INPUT_DEVICE_INDEX', 'AUDIO_OUTPUT_DEVICE_INDEX', pre=True)
-    def parse_device_index(cls, v):
-        if isinstance(v, str):
-            # Strip any comments and whitespace
-            v = v.split('#')[0].strip()
-        return int(v)
-    
-    # Audio Processing Settings
-    SAMPLE_RATE: int = 16000
-    CHANNELS: int = 1
-    COMMAND_DURATION: int = 3
-    
-    # Wake Word Settings
-    WAKE_WORD: str = "hey messy"
-    WAKE_WORD_MODEL_PATH: Path = MODELS_DIR / "hey-messy_en_raspberry-pi_v3_0_0.ppn"
-    WAKE_WORD_THRESHOLD: float = 0.5
-    
-    # ASR Settings
-    ASR_PROVIDER: str = "speech"
-    ASR_MODEL: str = "speech"
-    
-    # TTS Settings
-    TTS_MODEL: str = "tts-1-hd"
-    TTS_VOICE: str = "nova"
-    TTS_SPEED: float = 0.9
-    
     # OpenAI Model Settings
-    OPENAI_CHAT_MODEL: str = "gpt-4o"
-    OPENAI_ASSISTANT_MODEL: str = "gpt-4o"
-    OPENAI_WHISPER_MODEL: str = "whisper-1"
-    OPENAI_TTS_MODEL: str = "tts-1-hd"
-    OPENAI_TTS_VOICE: str = "fable"
-    OPENAI_TTS_SPEED: float = 0.9
+    OPENAI_CHAT_MODEL: str
+    OPENAI_WHISPER_MODEL: str
+    OPENAI_TTS_MODEL: str
+    OPENAI_TTS_VOICE: str
+    OPENAI_TTS_SPEED: float
     
     # Model Parameters
-    MODEL_TEMPERATURE: float = 0.7
-    MODEL_MAX_TOKENS: int = 4096
+    MODEL_TEMPERATURE: float
+    MODEL_MAX_TOKENS: int
     
+    # Audio Device Settings
+    AUDIO_INPUT_DEVICE_INDEX: int
+    AUDIO_OUTPUT_DEVICE_INDEX: int
+    AUDIO_NATIVE_RATE: int
+    AUDIO_PROCESSING_RATE: int
+    AUDIO_OUTPUT_RATE: int
+    
+    # Audio Processing Settings - with defaults
+    AUDIO_CHANNELS: int = 1
+    AUDIO_CHUNK_SIZE: int = 1024
+    AUDIO_BUFFER_SIZE: int = 8192
+    AUDIO_PRE_EMPHASIS: float = 0.97
+    AUDIO_SILENCE_THRESHOLD: int = 100
+    
+    # Wake Word Settings
+    WAKE_WORD: str
+    WAKE_WORD_MODEL_PATH: Path
+    WAKE_WORD_THRESHOLD: float
+    WAKE_WORD_MIN_VOLUME: int
+    WAKE_WORD_MAX_VOLUME: int
+    WAKE_WORD_DETECTION_WINDOW: float = 0.5
+    WAKE_WORD_CONSECUTIVE_FRAMES: int = 1
+    
+    # Directory Settings
+    BASE_DIR: Path = Path("/home/pi/messi")
+    CACHE_DIR: Path = BASE_DIR / "cache"
+    TEMP_DIR: Path = BASE_DIR / "temp"
+    MODEL_DIR: Path = BASE_DIR / "models"
+    CONTENT_DIR: Path = BASE_DIR / "content"
+    LOG_DIR: Path = BASE_DIR / "logs"
+
     class Config:
         env_file = ".env"
-        case_sensitive = True
+        env_file_encoding = 'utf-8'
+        extra = "allow"
+
+    def validate_paths(self):
+        """Validate that required files exist and create directories"""
+        # Check wake word model
+        if not self.WAKE_WORD_MODEL_PATH.exists():
+            raise FileNotFoundError(f"Wake word model not found at: {self.WAKE_WORD_MODEL_PATH}")
+            
+        # Create required directories
+        for directory in [self.CACHE_DIR, self.TEMP_DIR, self.MODEL_DIR, 
+                         self.CONTENT_DIR, self.LOG_DIR]:
+            directory.mkdir(parents=True, exist_ok=True)
+            
+        # Create subdirectories
+        (self.CACHE_DIR / "tts").mkdir(exist_ok=True)
+        (self.CACHE_DIR / "responses").mkdir(exist_ok=True)
