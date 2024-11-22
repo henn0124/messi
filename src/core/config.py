@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     AUDIO_PRE_EMPHASIS: float = 0.97
     AUDIO_SILENCE_THRESHOLD: int = 100
     
+    # Audio Output Settings
+    AUDIO_OUTPUT_VOLUME: float = 0.7  # Default to 70% volume
+    
     # Wake Word Settings
     WAKE_WORD: str
     WAKE_WORD_MODEL_PATH: Path

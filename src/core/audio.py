@@ -11,6 +11,7 @@ import io
 import time
 from .audio_processor import AudioProcessor
 import traceback
+import signal
 
 class AudioInterface:
     def __init__(self):
@@ -339,7 +340,7 @@ class AudioInterface:
                 
                 # Break if we've collected too much audio
                 if len(audio_chunks) > 100:  # About 10 seconds
-                    print("\n⚠️  Command too long, processing...")
+                    print("\n️  Command too long, processing...")
                     break
             
             if audio_chunks:
@@ -361,31 +362,37 @@ class AudioInterface:
             return None
 
     async def play_audio_chunk(self, audio_data: bytes):
-        """Play audio with proper initialization and error handling"""
+        """Play audio with volume reduction"""
         try:
             # Initialize output stream if needed
             if not self.output_stream:
                 self.output_stream = self.p.open(
-                    format=self.AUDIO_SETTINGS["formats"]["format"],
+                    format=pyaudio.paInt16,
                     channels=1,
-                    rate=self.AUDIO_SETTINGS["sample_rates"]["output"],
+                    rate=24000,  # TTS output rate
                     output=True,
-                    output_device_index=self.AUDIO_SETTINGS["devices"]["output_device_index"]
+                    output_device_index=self.AUDIO_SETTINGS["devices"]["output_device_index"],
+                    frames_per_buffer=2048
                 )
             
             print("\n▶ Playing audio...")
             self.is_playing = True
             
-            # Play in smaller chunks to allow interruption
-            chunk_size = self.AUDIO_SETTINGS["audio_processing"]["chunk_size"]
-            for i in range(0, len(audio_data), chunk_size):
+            # Apply volume reduction
+            audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
+            audio_array = audio_array * 0.7  # 70% volume
+            audio_array = np.clip(audio_array, -32768, 32767).astype(np.int16)
+            
+            # Play in reasonably sized chunks
+            chunk_size = 2048
+            for i in range(0, len(audio_array.tobytes()), chunk_size):
                 if self.interrupt_event.is_set():
                     print("\n⚠️  Playback interrupted")
                     break
                     
-                chunk = audio_data[i:i + chunk_size]
+                chunk = audio_array.tobytes()[i:i + chunk_size]
                 self.output_stream.write(chunk)
-                await asyncio.sleep(0.001)  # Allow other tasks to run
+                await asyncio.sleep(0.001)
             
             self.is_playing = False
             self.interrupt_event.clear()
@@ -394,7 +401,6 @@ class AudioInterface:
             print(f"Error playing audio: {e}")
             self.is_playing = False
         finally:
-            # Reset interrupt flag
             self.interrupt_event.clear()
 
     async def _handle_wake_word(self, audio_data: bytes):
