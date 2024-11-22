@@ -9,4 +9,4 @@
 - Test in different ambient noise conditions
 
 ### 2. Follow-up Questions
-Test scenarios: 
+Test scenarios:

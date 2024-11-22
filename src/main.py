@@ -105,7 +105,15 @@ class SmartSpeaker:
             # Process the interaction
             should_continue = await self.conversation_manager.process_interaction(text)
             if not should_continue:
+                print("Conversation ended by user")
                 await self.led.set_state(LEDState.READY)
+                # Play goodbye response
+                goodbye_response = await self.tts.synthesize(
+                    "Goodbye! Let me know if you need anything else.",
+                    "farewell"
+                )
+                if goodbye_response:
+                    await self.audio.play_audio(goodbye_response)
                 return
             
             # Start routing and response generation in parallel

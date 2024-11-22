@@ -76,12 +76,21 @@ class ResponseCache:
         """Cache a new response"""
         try:
             cache_key = self._generate_cache_key(query, context)
+            
+            # Convert sets to lists for JSON serialization
+            if context and "mentioned_entities" in context:
+                context = dict(context)  # Make a copy
+                context["mentioned_entities"] = list(context["mentioned_entities"])
+            
             cache_data = {
                 'query': query,
                 'response': response,
                 'context': context,
                 'timestamp': time.time()
             }
+            
+            # Ensure all sets in the response are converted to lists
+            cache_data = self._convert_sets_to_lists(cache_data)
             
             cache_file = self.cache_dir / f"{cache_key}.json"
             with open(cache_file, 'w') as f:
@@ -92,6 +101,17 @@ class ResponseCache:
             
         except Exception as e:
             print(f"Error caching response: {e}")
+    
+    def _convert_sets_to_lists(self, data):
+        """Recursively convert sets to lists in a dictionary"""
+        if isinstance(data, dict):
+            return {key: self._convert_sets_to_lists(value) for key, value in data.items()}
+        elif isinstance(data, list):
+            return [self._convert_sets_to_lists(item) for item in data]
+        elif isinstance(data, set):
+            return list(data)
+        else:
+            return data
     
     def _check_similar_context(self, query: str, current_context: Dict, cached_data: Dict) -> bool:
         """Check if cached response is from similar context"""

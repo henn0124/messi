@@ -15,11 +15,20 @@ class ConversationManager:
     EXTENDED_PAUSE_THRESHOLD = 10.0  # Long pause - likely end of conversation
     RESPONSE_WINDOW = 3.0           # Expected time window for a response
     
-    # Exit phrases that explicitly end conversation
+    # Expanded exit phrases with variations
     EXIT_PHRASES = {
-        "goodbye", "bye", "thank you", "thanks", "that's all",
-        "we're done", "stop", "end", "finish", "quit",
-        "good night", "sleep well"
+        # Direct endings
+        "goodbye", "bye", "bye bye", "see you", 
+        "that's all", "we're done", "i'm done",
+        
+        # Polite endings
+        "thank you", "thanks", "thank you very much",
+        
+        # Bedtime endings
+        "good night", "sleep well", "time for bed",
+        
+        # Command endings
+        "stop", "end", "finish", "quit", "exit"
     }
     
     # Engagement thresholds for detecting user interest
@@ -69,13 +78,24 @@ class ConversationManager:
         self.last_interaction_time = current_time
         self.interaction_count += 1
         
-        # Check for explicit conversation endings
-        if self._contains_exit_phrase(text.lower()):
+        # Check for explicit endings - more thorough check
+        text_lower = text.lower().strip()
+        
+        # Check for exact matches
+        if text_lower in self.EXIT_PHRASES:
+            print(f"Explicit exit phrase detected: '{text_lower}'")
             await self.end_conversation("explicit_exit")
             return False
         
+        # Check for phrases within text
+        for phrase in self.EXIT_PHRASES:
+            if phrase in text_lower:
+                print(f"Exit phrase detected within text: '{phrase}'")
+                await self.end_conversation("explicit_exit")
+                return False
+        
         # Story requests should continue conversation
-        if any(phrase in text.lower() for phrase in ["tell me a story", "story about"]):
+        if any(phrase in text_lower for phrase in ["tell me a story", "story about"]):
             self.state = ConversationState.ACTIVE
             self.consecutive_short_responses = 0
             print("Starting story conversation")
@@ -118,10 +138,6 @@ class ConversationManager:
             return True
             
         return True
-    
-    def _contains_exit_phrase(self, text: str) -> bool:
-        """Check if text contains any phrases that should end conversation"""
-        return any(phrase in text for phrase in self.EXIT_PHRASES)
     
     async def end_conversation(self, reason: str):
         """

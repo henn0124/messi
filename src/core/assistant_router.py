@@ -115,23 +115,56 @@ If referring to cached information, acknowledge it naturally.
             
             if cached_response:
                 print("✓ Using cached response")
-                # Update conversation context with cached response
                 self.conversation_context["last_answer"] = cached_response["text"]
                 return self._adapt_cached_response(cached_response)
             
-            # If no cache hit, proceed with normal routing
+            # If no cache hit, create OpenAI request
             messages = await self._create_contextual_prompt(user_input)
-            response = await self._get_openai_response(messages)
+            
+            # Make OpenAI API call
+            response = await self.client.chat.completions.create(
+                model=self.settings.OPENAI_CHAT_MODEL,
+                messages=messages,
+                temperature=0.7
+            )
+            
+            # Format response
+            result = {
+                "text": response.choices[0].message.content,
+                "skill": "education",
+                "intent": "answer_question",
+                "mode": "informative",
+                "parameters": {
+                    "question": user_input,
+                    "context": {
+                        "topic": self.conversation_context["current_topic"],
+                        "mentioned_entities": list(self.conversation_context["mentioned_entities"]),
+                        "conversation_history": self.conversation_context["conversation_history"][-3:]
+                    }
+                }
+            }
             
             # Cache the new response
             await self.response_cache.cache_response(
                 user_input,
-                response,
+                result,
                 self.conversation_context
             )
             
-            return response
+            return result
             
+        except Exception as e:
+            print(f"✗ Error in router: {e}")
+            return {
+                "skill": "education",
+                "intent": "answer_question",
+                "mode": "error",
+                "parameters": {
+                    "question": user_input,
+                    "error": str(e)
+                }
+            }
+    
     def _adapt_cached_response(self, cached_response: Dict) -> Dict:
         """Adapt cached response to current context"""
         # Add variety to cached responses
