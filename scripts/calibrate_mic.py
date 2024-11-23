@@ -9,14 +9,8 @@ import os
 # Add project root to Python path
 project_root = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(project_root))
-print(f"Added to Python path: {project_root}")
 
-try:
-    from src.core.config import Settings
-except ImportError as e:
-    print(f"Import error: {e}")
-    print(f"Python path: {sys.path}")
-    sys.exit(1)
+from src.core.config import Settings
 
 class MicCalibration:
     def __init__(self):
@@ -25,9 +19,9 @@ class MicCalibration:
         self.stream = None
         
         # Test durations
-        self.ambient_duration = 5    # seconds for ambient noise
-        self.speech_duration = 10    # increased to 10 seconds for better wake word testing
-        self.test_phrases = 3        # number of "Hey Messy" test phrases
+        self.ambient_duration = 5
+        self.speech_duration = 5
+        self.test_phrases = 3
         
         # Metrics storage
         self.ambient_levels = []
@@ -52,14 +46,27 @@ class MicCalibration:
                 print(f"  Max Input Channels: {dev['maxInputChannels']}")
                 print(f"  Default Sample Rate: {dev['defaultSampleRate']}")
             
+            # Find Maono mic
+            mic_index = None
+            for i in range(self.p.get_device_count()):
+                dev = self.p.get_device_info_by_index(i)
+                if "maono" in dev['name'].lower():
+                    mic_index = i
+                    print(f"\nFound Maono mic at index {i}")
+                    break
+            
+            if mic_index is None:
+                print("Maono microphone not found!")
+                return
+            
             # Initialize audio stream
             self.stream = self.p.open(
-                rate=44100,
+                rate=44100,  # Native rate
                 channels=1,
                 format=pyaudio.paInt16,
                 input=True,
-                input_device_index=1,  # Maono mic
-                frames_per_buffer=1024
+                input_device_index=mic_index,
+                frames_per_buffer=2048
             )
             
             # Test 1: Ambient Noise
@@ -67,34 +74,30 @@ class MicCalibration:
             print(f"Please remain quiet for {self.ambient_duration} seconds...")
             await self._measure_levels(self.ambient_duration, self.ambient_levels)
             
-            # Test 2: Wake Word Testing
-            print(f"\n=== Testing Wake Word Detection ===")
-            print(f"Please say 'Hey Messy' {self.test_phrases} times")
-            print("Wait for the prompt between each phrase")
-            
-            for i in range(self.test_phrases):
-                print(f"\nPhrase {i+1}/{self.test_phrases}: Say 'Hey Messy' now...")
-                start_time = time.time()
-                await self._measure_levels(3, self.speech_levels)  # 3 seconds per phrase
-                self.detection_gaps.append(time.time() - start_time)
-                await asyncio.sleep(2)  # Pause between phrases
+            # Test 2: Speech Levels
+            print("\n=== Testing Speech Levels ===")
+            print(f"Please speak 'Hey Messy' several times at your normal volume")
+            print(f"Recording for {self.speech_duration} seconds...")
+            await self._measure_levels(self.speech_duration, self.speech_levels)
             
             # Calculate and display results
             await self._analyze_results()
             
         except Exception as e:
             print(f"Calibration error: {e}")
+            import traceback
+            traceback.print_exc()
         finally:
             self.cleanup()
 
     async def _measure_levels(self, duration: int, level_storage: list):
-        """Measure audio levels for specified duration"""
+        """Measure audio levels with visual feedback"""
         start_time = time.time()
         
         while time.time() - start_time < duration:
             try:
                 # Read audio
-                data = self.stream.read(1024, exception_on_overflow=False)
+                data = self.stream.read(2048, exception_on_overflow=False)
                 audio_array = np.frombuffer(data, dtype=np.int16)
                 
                 # Calculate levels
@@ -118,7 +121,7 @@ class MicCalibration:
         print()  # New line after progress
 
     async def _analyze_results(self):
-        """Analyze and display calibration results with wake word recommendations"""
+        """Analyze and display calibration results"""
         if not self.ambient_levels or not self.speech_levels:
             print("No data collected!")
             return
@@ -129,21 +132,13 @@ class MicCalibration:
         speech_mean = np.mean(self.speech_levels)
         speech_std = np.std(self.speech_levels)
         
-        # Calculate wake word specific recommendations
-        avg_detection_time = np.mean(self.detection_gaps)
-        detection_std = np.std(self.detection_gaps)
-        
         # Calculate recommended settings
-        recommended = {
-            "WAKE_WORD_MIN_VOLUME": max(speech_mean * 0.4, 150),
-            "AUDIO_SILENCE_THRESHOLD": max(ambient_mean * 2, 100),
-            "WAKE_WORD_MAX_VOLUME": min(self.peak_level * 1.2, 5000),
-            "WAKE_WORD_THRESHOLD": 0.85,  # Start more sensitive
-            "WAKE_WORD_DETECTION_WINDOW": max(avg_detection_time * 0.8, 0.3),
-            "WAKE_WORD_CONSECUTIVE_FRAMES": 1 if speech_std < 100 else 2
-        }
+        min_volume = max(speech_mean * 0.4, 150)
+        silence_threshold = max(ambient_mean * 2, 80)
+        max_volume = min(self.peak_level * 1.2, 3351)
         
         print("\n=== Calibration Results ===")
+        
         print("\nAmbient Noise:")
         print(f"  Mean Level: {ambient_mean:.1f}")
         print(f"  Std Dev: {ambient_std:.1f}")
@@ -156,18 +151,12 @@ class MicCalibration:
         
         print(f"\nPeak Level: {self.peak_level:.1f}")
         
-        print("\nWake Word Timing:")
-        print(f"  Average Detection Time: {avg_detection_time:.2f}s")
-        print(f"  Detection Time Std Dev: {detection_std:.2f}s")
-        
         print("\nRecommended Settings:")
-        for key, value in recommended.items():
-            if isinstance(value, float):
-                print(f"{key} = {value:.2f}")
-            else:
-                print(f"{key} = {value}")
+        print(f"WAKE_WORD_MIN_VOLUME = {min_volume:.0f}")
+        print(f"AUDIO_SILENCE_THRESHOLD = {silence_threshold:.0f}")
+        print(f"WAKE_WORD_MAX_VOLUME = {max_volume:.0f}")
         
-        # Save comprehensive results
+        # Save results
         results_file = project_root / "calibration_results.txt"
         with open(results_file, "w") as f:
             f.write("=== Microphone Calibration Results ===\n")
@@ -178,16 +167,12 @@ class MicCalibration:
             f.write(f"Ambient Noise Std Dev: {ambient_std:.1f}\n")
             f.write(f"Speech Level Mean: {speech_mean:.1f}\n")
             f.write(f"Speech Level Std Dev: {speech_std:.1f}\n")
-            f.write(f"Peak Level: {self.peak_level:.1f}\n")
-            f.write(f"Average Detection Time: {avg_detection_time:.2f}s\n\n")
+            f.write(f"Peak Level: {self.peak_level:.1f}\n\n")
             
-            f.write("Add these to your .env file:\n")
-            f.write("# Wake Word Settings (calibrated)\n")
-            for key, value in recommended.items():
-                if isinstance(value, float):
-                    f.write(f"{key}={value:.2f}\n")
-                else:
-                    f.write(f"{key}={value}\n")
+            f.write("Recommended Settings:\n")
+            f.write(f"WAKE_WORD_MIN_VOLUME = {min_volume:.0f}\n")
+            f.write(f"AUDIO_SILENCE_THRESHOLD = {silence_threshold:.0f}\n")
+            f.write(f"WAKE_WORD_MAX_VOLUME = {max_volume:.0f}\n")
         
         print(f"\nResults saved to {results_file}")
 

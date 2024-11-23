@@ -1,3 +1,78 @@
+"""
+Response Cache Manager for Messi Assistant
+----------------------------------------
+
+This module implements a sophisticated caching system for assistant responses,
+providing efficient storage and retrieval with context awareness and relevance
+matching capabilities.
+
+Key Features:
+    1. Response Caching:
+        - JSON-based storage
+        - SHA256 key hashing
+        - Configurable expiry
+        - Size-limited cache
+    
+    2. Context Awareness:
+        - Topic-based matching
+        - Entity recognition
+        - Similarity scoring
+        - Relevance ranking
+    
+    3. Cache Management:
+        - Automatic cleanup
+        - Age-based expiry
+        - Size monitoring
+        - File-based storage
+    
+    4. Performance Features:
+        - Async I/O operations
+        - Efficient key generation
+        - Quick relevance checking
+        - Optimized storage format
+
+Configuration:
+    max_size: Maximum cache size in bytes (default: 1MB)
+    max_age: Cache entry lifetime (default: 24 hours)
+    min_similarity: Threshold for text matching (default: 0.85)
+
+File Structure:
+    /src/cache/responses/
+        - {hash}.json: Cached response files
+        Each file contains:
+        {
+            'key': original_query,
+            'response': response_data,
+            'timestamp': creation_time
+        }
+
+Usage:
+    cache = ResponseCache(max_size=1024*1024)
+    
+    # Store response
+    await cache.set("What's the weather?", {"text": "It's sunny"})
+    
+    # Retrieve response
+    response = await cache.get("What's the weather?")
+    
+    # Get relevant context
+    context = await cache.get_relevant_context(
+        query="What's the temperature?",
+        current_topic="weather",
+        entities={"weather", "temperature"}
+    )
+
+Statistics:
+    The cache maintains usage statistics:
+    - Cache hits
+    - Cache misses
+    - Similar matches
+    These can be used for performance monitoring and optimization.
+
+Author: Your Name
+Created: 2024-01-24
+"""
+
 from typing import Optional, Dict, Any
 import json
 from pathlib import Path

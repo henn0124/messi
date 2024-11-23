@@ -1,426 +1,350 @@
+"""
+Audio Interface for Messi Assistant on Raspberry Pi
+------------------------------------------------
+
+This module handles all audio I/O operations for the Messi Assistant,
+specifically optimized for Raspberry Pi 4 hardware setup.
+
+Hardware Configuration:
+    - Device: Raspberry Pi 4
+    - Input: Maono AU-PM461TR USB Microphone
+        - Sample Rate: 44.1kHz
+        - Bit Depth: 16-bit
+        - Channels: Mono
+        - Device Index: 1
+    
+    - Output: Raspberry Pi 3.5mm Audio Jack
+        - Sample Rate: 24kHz
+        - Bit Depth: 16-bit
+        - Channels: Mono
+        - Device Index: 0
+
+Audio Format Standards:
+    1. Input (Microphone):
+        - Format: WAV (PCM)
+        - Sample Rate: 44.1kHz (native)
+        - Bit Depth: 16-bit
+        - Channels: Mono
+        - Chunk Size: 2048 samples
+    
+    2. Processing:
+        - Format: WAV (PCM)
+        - Sample Rate: 16kHz (required by Whisper/Porcupine)
+        - Bit Depth: 16-bit
+        - Channels: Mono
+        - Frame Size: 512 samples (Porcupine requirement)
+    
+    3. Output (Playback):
+        - Format: WAV (PCM)
+        - Sample Rate: 24kHz (OpenAI TTS)
+        - Bit Depth: 16-bit
+        - Channels: Mono
+        - Chunk Size: 2048 samples
+
+Usage:
+    audio = AudioInterface()
+    await audio.initialize()
+    await audio.start_wake_word_detection(callback)
+"""
+
 import pyaudio
 import numpy as np
 from typing import Callable, Optional
 import pvporcupine
-import struct
-from .config import Settings
-import asyncio
-from concurrent.futures import ThreadPoolExecutor
 import wave
 import io
-import time
-from .audio_processor import AudioProcessor
+import asyncio
 import traceback
-import signal
+from .config import Settings
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 class AudioInterface:
     def __init__(self):
-        # Get settings
+        # Core initialization
         self.settings = Settings()
-        
-        # Initialize PyAudio
         self.p = pyaudio.PyAudio()
         self.stream = None
         self.output_stream = None
         
-        # Build audio settings from environment
-        self.AUDIO_SETTINGS = {
-            "sample_rates": {
-                "input_native": self.settings.AUDIO_NATIVE_RATE,
-                "processing": self.settings.AUDIO_PROCESSING_RATE,
-                "output": self.settings.AUDIO_OUTPUT_RATE
-            },
-            "formats": {
-                "width": 2,             # 16-bit
-                "channels": 1,          # Mono
-                "format": pyaudio.paInt16
-            },
-            "wake_word": {
-                "sensitivity": self.settings.WAKE_WORD_THRESHOLD,
-                "min_volume": self.settings.WAKE_WORD_MIN_VOLUME,
-                "max_volume": self.settings.WAKE_WORD_MAX_VOLUME,
-                "detection_window": 0.5,
-                "consecutive_frames": 1
-            },
-            "audio_processing": {
-                "pre_emphasis": 0.97,
-                "silence_threshold": 100,
-                "chunk_size": 1024,
-                "buffer_size": 8192
-            },
-            "devices": {
-                "input_device_index": self.settings.AUDIO_INPUT_DEVICE_INDEX,
-                "output_device_index": self.settings.AUDIO_OUTPUT_DEVICE_INDEX
-            }
-        }
+        # Thread and state management
+        self.executor = ThreadPoolExecutor(max_workers=2)
+        self.running = False
+        self.is_playing = False
+        self.in_conversation = False
+        self.interrupt_event = asyncio.Event()
+        self.wake_word_callback = None
         
         # Initialize Porcupine
         try:
-            print("\nInitializing Porcupine wake word detector...")
+            print("\nInitializing wake word detector...")
             self.porcupine = pvporcupine.create(
                 access_key=self.settings.PICOVOICE_ACCESS_KEY,
                 keyword_paths=[str(self.settings.WAKE_WORD_MODEL_PATH)],
                 sensitivities=[self.settings.WAKE_WORD_THRESHOLD]
             )
-            
-            # Update settings with Porcupine requirements
-            self.AUDIO_SETTINGS.update({
-                "porcupine": {
-                    "frame_length": self.porcupine.frame_length,
-                    "sample_rate": self.porcupine.sample_rate
-                }
-            })
-            
-            print(f"\n=== Audio Configuration ===")
-            print(f"Input Device: Maono Elf USB Microphone")
-            print(f"Native Sample Rate: {self.AUDIO_SETTINGS['sample_rates']['input_native']}Hz")
-            print(f"Processing Rate: {self.AUDIO_SETTINGS['sample_rates']['processing']}Hz")
-            print(f"Frame Length: {self.AUDIO_SETTINGS['porcupine']['frame_length']} samples")
-            print(f"Wake Word Sensitivity: {self.AUDIO_SETTINGS['wake_word']['sensitivity']}")
-            print(f"Volume Range: {self.AUDIO_SETTINGS['wake_word']['min_volume']} - {self.AUDIO_SETTINGS['wake_word']['max_volume']}")
-            
+            print("✓ Wake word detector initialized")
         except Exception as e:
-            print(f"Error initializing audio interface: {e}")
+            print(f"Error initializing wake word detector: {e}")
             raise
-        
-        # State tracking
-        self.running = False
-        self.is_playing = False
-        self.wake_word_callback = None
-        self.interrupt_event = asyncio.Event()
-        
-        # Audio processing state
-        self.audio_buffer = []
-        self.last_audio_level = 0
-        self.peak_audio_level = 0
-        self.detection_window = []
-        self.consecutive_detections = 0
-    
+
     async def initialize(self):
-        """Initialize audio stream with proper settings"""
+        """Initialize audio with proper configuration"""
         try:
-            # List available devices
-            print("\nAvailable Audio Devices:")
-            for i in range(self.p.get_device_count()):
-                dev = self.p.get_device_info_by_index(i)
-                print(f"Index {i}: {dev['name']}")
-                print(f"  Max Input Channels: {dev['maxInputChannels']}")
-                print(f"  Default Sample Rate: {dev['defaultSampleRate']}")
-            
-            # Open input stream at native rate
-            self.stream = self.p.open(
-                rate=self.AUDIO_SETTINGS["sample_rates"]["input_native"],
-                channels=self.AUDIO_SETTINGS["formats"]["channels"],
-                format=self.AUDIO_SETTINGS["formats"]["format"],
-                input=True,
-                input_device_index=self.AUDIO_SETTINGS["devices"]["input_device_index"],
-                frames_per_buffer=self._calculate_buffer_size()
+            # Get device info
+            input_device_info = self.p.get_device_info_by_index(
+                self.settings.AUDIO_INPUT_DEVICE_INDEX
             )
             
-            print("\n✓ Audio stream initialized")
+            # Calculate frame parameters
+            self.input_sample_rate = int(input_device_info['defaultSampleRate'])
+            self.frame_length = self.porcupine.frame_length
+            self.samples_per_frame = int(self.input_sample_rate / 16000 * self.frame_length)
+            
+            print(f"\nAudio Configuration:")
+            print(f"Sample Rate: {self.input_sample_rate}Hz")
+            print(f"Frame Length: {self.frame_length}")
+            print(f"Samples per Frame: {self.samples_per_frame}")
+            
+            # Initialize input stream
+            self.stream = self.p.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=self.input_sample_rate,
+                input=True,
+                frames_per_buffer=self.samples_per_frame,
+                input_device_index=self.settings.AUDIO_INPUT_DEVICE_INDEX
+            )
+            
             return True
             
         except Exception as e:
             print(f"Error initializing audio: {e}")
-            self.stream = None
             return False
-    
-    def _calculate_buffer_size(self) -> int:
-        """Calculate appropriate buffer size based on rates"""
-        native_rate = self.AUDIO_SETTINGS["sample_rates"]["input_native"]
-        target_rate = self.AUDIO_SETTINGS["sample_rates"]["processing"]
-        base_size = self.AUDIO_SETTINGS["porcupine"]["frame_length"]
+
+    async def start_wake_word_detection(self, callback):
+        """Start wake word detection with proper async handling"""
+        print("\nStarting wake word detection...")
+        self.wake_word_callback = callback
+        self.running = True
         
-        return int(base_size * native_rate / target_rate)
+        # Create monitoring task instead of awaiting directly
+        monitoring_task = asyncio.create_task(self._monitor_wake_word())
+        
+        # Start keep-alive task
+        asyncio.create_task(self._keep_monitoring(monitoring_task))
+        
+        print("Wake word detection active")
+        print("\nListening for wake word...")
 
-    async def start_wake_word_detection(self, callback: Callable):
-        """Start wake word detection"""
+    async def _keep_monitoring(self, monitoring_task):
+        """Keep monitoring task alive"""
         try:
-            self.running = True
-            self.wake_word_callback = callback
-            
-            # Start monitoring task
-            self.monitor_task = asyncio.create_task(self._monitor_wake_word())
-            print("\nWake word detection started")
-            print("Listening for 'Hey Messy'...")
-            return True
-            
+            while self.running:
+                if monitoring_task.done():
+                    print("\nRestarting wake word monitoring...")
+                    monitoring_task = asyncio.create_task(self._monitor_wake_word())
+                await asyncio.sleep(1)
         except Exception as e:
-            print(f"Error starting wake word detection: {e}")
-            return False
-
-    async def stop(self):
-        """Stop all audio processing"""
-        try:
-            print("\nStopping audio interface...")
-            self.running = False
-            
-            # Cancel monitoring task
-            if hasattr(self, 'monitor_task'):
-                self.monitor_task.cancel()
-                try:
-                    await self.monitor_task
-                except asyncio.CancelledError:
-                    pass
-            
-            # Close streams
-            if self.stream:
-                self.stream.stop_stream()
-                self.stream.close()
-            
-            if self.output_stream:
-                self.output_stream.stop_stream()
-                self.output_stream.close()
-            
-            # Clean up PyAudio
-            if self.p:
-                self.p.terminate()
-            
-            # Clean up Porcupine
-            if self.porcupine:
-                self.porcupine.delete()
-            
-            print("✓ Audio interface stopped")
-            
-        except Exception as e:
-            print(f"Error stopping audio interface: {e}")
+            print(f"Error in monitoring loop: {e}")
 
     async def _monitor_wake_word(self):
-        """Monitor audio for wake word detection"""
-        if not self.stream:
-            print("Error: Audio stream not initialized")
-            return
-            
-        print("\n=== Starting Wake Word Detection ===")
-        print("Listening for 'Hey Messy'...")
-        
-        detection_window = []
-        window_size = int(self.AUDIO_SETTINGS["wake_word"]["detection_window"] * 
-                         self.AUDIO_SETTINGS["sample_rates"]["processing"] / 
-                         self.porcupine.frame_length)
-        
-        while self.running and self.stream:
+        """Monitor audio stream with enhanced logging"""
+        while self.running:
             try:
-                # Get audio frame
-                audio_frame = await self._get_next_audio_frame()
-                if audio_frame is None:
+                # Get audio frame non-blocking
+                pcm = await self._get_next_audio_frame()
+                if pcm is None:
                     continue
                 
-                # Convert to required format
-                pcm = np.frombuffer(audio_frame, dtype=np.int16)
+                # Process wake word in thread pool
+                result = await asyncio.get_event_loop().run_in_executor(
+                    self.executor,
+                    self.porcupine.process,
+                    pcm
+                )
                 
-                # Calculate audio level
-                audio_level = np.abs(pcm).mean()
-                
-                # Show audio activity
-                if audio_level > self.AUDIO_SETTINGS["wake_word"]["min_volume"]:
-                    level_indicator = "#" * int(audio_level / 100)
-                    print(f"\rLevel: {level_indicator}", end="", flush=True)
-                
-                # Process for wake word if frame size is correct
-                if len(pcm) == self.porcupine.frame_length:
-                    result = self.porcupine.process(pcm)
+                if result >= 0:
+                    print("\n\n🎤 Wake word detected!")
+                    print("Listening for command...")
                     
-                    # Add result to detection window
-                    detection_window.append((result, audio_level))
-                    if len(detection_window) > window_size:
-                        detection_window.pop(0)
+                    # Handle any ongoing playback
+                    if self.is_playing:
+                        self.interrupt_event.set()
+                        await asyncio.sleep(0.1)
                     
-                    # Check for wake word in window
-                    detections = sum(1 for r, _ in detection_window if r >= 0)
-                    avg_level = np.mean([l for _, l in detection_window])
+                    # Get command audio
+                    command_audio = await self._collect_command_audio()
+                    if command_audio and self.wake_word_callback:
+                        await self.wake_word_callback(command_audio)
+                    else:
+                        print("\n⏳ No valid command detected")
                     
-                    if detections > 0:
-                        print(f"\n\n🎯 Wake word detected!")
-                        print(f"Audio level: {avg_level:.0f}")
-                        
-                        if avg_level > self.AUDIO_SETTINGS["wake_word"]["min_volume"]:
-                            print("\n=== Wake Word Confirmed! ===")
-                            print("Starting command collection...")
-                            
-                            # Clear detection window
-                            detection_window.clear()
-                            
-                            # Collect command
-                            command_audio = await self._collect_command_audio()
-                            if command_audio and self.wake_word_callback:
-                                await self.wake_word_callback(command_audio)
-                            
-                            print("\nListening for wake word...")
+                    print("\nListening for wake word...")
                 
+                # Minimal sleep to prevent CPU overuse
                 await asyncio.sleep(0.001)
-                
+                    
             except Exception as e:
-                print(f"\nError in wake word monitoring: {e}")
-                traceback.print_exc()
+                print(f"Error in wake word monitoring: {e}")
                 await asyncio.sleep(0.1)
 
-    async def _get_next_audio_frame(self) -> Optional[bytes]:
-        """Get next audio frame with proper resampling"""
+    async def _get_next_audio_frame(self):
+        """Get audio frame with efficient processing"""
         try:
-            if not self.stream:
-                return None
+            # Run blocking audio read in executor
+            pcm = await asyncio.get_event_loop().run_in_executor(
+                self.executor,
+                self.stream.read,
+                self.samples_per_frame,
+                False
+            )
             
-            # Calculate required samples at input rate
-            input_rate = int(self.stream._rate)
-            input_samples = int(input_rate/16000 * self.porcupine.frame_length)
+            # Process with numpy for efficiency
+            audio = np.frombuffer(pcm, dtype=np.int16)
             
-            # Read at native rate
-            data = self.stream.read(input_samples, exception_on_overflow=False)
+            # Resample if needed
+            if self.input_sample_rate != 16000:
+                ratio = 16000 / self.input_sample_rate
+                target_length = int(len(audio) * ratio)
+                indices = np.linspace(0, len(audio)-1, target_length).astype(int)
+                resampled = audio[indices]
+                
+                if len(resampled) > self.frame_length:
+                    return resampled[:self.frame_length]
+                return np.pad(resampled, (0, self.frame_length - len(resampled)))
             
-            # Convert to numpy array
-            audio_array = np.frombuffer(data, dtype=np.int16)
-            
-            # Apply pre-emphasis filter
-            pre_emphasis = self.AUDIO_SETTINGS["audio_processing"]["pre_emphasis"]
-            emphasized = np.append(audio_array[0], audio_array[1:] - pre_emphasis * audio_array[:-1])
-            
-            # Normalize audio
-            normalized = emphasized / (np.max(np.abs(emphasized)) + 1e-10)
-            normalized = (normalized * 32767).astype(np.int16)
-            
-            # Resample to 16kHz for Porcupine
-            resampled = np.interp(
-                np.linspace(0, len(normalized)-1, self.porcupine.frame_length),
-                np.arange(len(normalized)),
-                normalized
-            ).astype(np.int16)
-            
-            return resampled.tobytes()
+            return audio
             
         except Exception as e:
-            print(f"Error getting audio frame: {e}")
+            print(f"Error reading audio frame: {e}")
             return None
 
-    async def _collect_command_audio(self) -> Optional[bytes]:
-        """Collect command audio with improved silence detection"""
+    async def _collect_command_audio(self):
+        """Collect command audio with smart end detection"""
         try:
-            audio_chunks = []
+            print("\n=== Recording Command ===")
+            chunks = []
             silence_count = 0
-            max_silence = 8  # Number of silent chunks before stopping
-            speech_levels = []
+            speech_started = False
+            max_silence_frames = 25  # Longer silence tolerance (~0.5s)
+            max_wait_for_speech = 2.0  # Seconds to wait for speech to start
+            max_recording_duration = 10.0  # Maximum total duration
+            natural_pause_threshold = 10  # Allow shorter pauses during speech
             
-            print("\n=== Waiting for Command ===")
-            print("▶ Listening for your request...")
+            start_time = time.time()
+            last_speech_time = start_time
             
-            while silence_count < max_silence:
-                chunk = await self._get_next_audio_frame()
-                if not chunk:
-                    continue
-                
-                # Monitor levels
-                audio_array = np.frombuffer(chunk, dtype=np.int16)
-                audio_level = np.abs(audio_array).mean()
-                
-                # Update speech levels if we detect speech
-                if audio_level > self.AUDIO_SETTINGS["wake_word"]["min_volume"]:
-                    speech_levels.append(audio_level)
-                
-                # Calculate adaptive silence threshold
-                silence_threshold = (
-                    np.mean(speech_levels) * 0.2 if speech_levels 
-                    else self.AUDIO_SETTINGS["wake_word"]["min_volume"] * 0.3
+            # Pre-allocate buffer
+            audio_buffer = np.zeros(1024, dtype=np.int16)
+            
+            print("Listening...")
+            
+            while True:
+                # Non-blocking read
+                chunk = await asyncio.get_event_loop().run_in_executor(
+                    self.executor,
+                    self.stream.read,
+                    1024,
+                    False
                 )
                 
-                # Visual feedback
-                level_indicator = "#" * int(audio_level / 100)
-                silence_indicator = "-" * int(silence_threshold / 100)
-                print(f"Level: {level_indicator}")
-                print(f"Silence: {silence_indicator}")
+                # Process audio level
+                np.copyto(audio_buffer, np.frombuffer(chunk, dtype=np.int16))
+                level = float(np.abs(audio_buffer).mean())
                 
-                if audio_level > silence_threshold:
-                    if not audio_chunks:  # First speech detected
-                        print("✓ Speech detected, listening...")
-                    audio_chunks.append(chunk)
-                    silence_count = 0
-                elif audio_chunks:  # Already collecting and detected silence
-                    silence_count += 1
-                    print(f"Silence detected ({silence_count}/{max_silence})")
-                    audio_chunks.append(chunk)  # Keep some silence
+                # Create equalizer visualization
+                height = min(10, int((level / self.settings.WAKE_WORD_MAX_VOLUME) * 10))
+                bars = [("█" if i < height else "░") for i in range(10)]
+                viz = f"\r│{''.join(bars)}│ {level:4.0f}"
+                print(viz, end='', flush=True)
                 
-                # Break if we've collected too much audio
-                if len(audio_chunks) > 100:  # About 10 seconds
-                    print("\n️  Command too long, processing...")
-                    break
-            
-            if audio_chunks:
-                # Check if ending was clear
-                ending_type = "clear ending" if silence_count >= max_silence else "length limit"
-                print(f"\n✓ Speech ended ({ending_type})")
+                current_time = time.time()
+                elapsed = current_time - start_time
                 
-                # Join chunks and return
-                command_audio = b''.join(audio_chunks)
-                print(f"\n▶ Processing command ({len(command_audio)/1024:.1f}KB)...")
-                return command_audio
-            
-            print("\n❌ No command detected")
-            return None
-            
-        except Exception as e:
-            print(f"Error collecting command: {e}")
-            traceback.print_exc()
-            return None
-
-    async def play_audio_chunk(self, audio_data: bytes):
-        """Play audio with volume reduction"""
-        try:
-            # Initialize output stream if needed
-            if not self.output_stream:
-                self.output_stream = self.p.open(
-                    format=pyaudio.paInt16,
-                    channels=1,
-                    rate=24000,  # TTS output rate
-                    output=True,
-                    output_device_index=self.AUDIO_SETTINGS["devices"]["output_device_index"],
-                    frames_per_buffer=2048
-                )
-            
-            print("\n▶ Playing audio...")
-            self.is_playing = True
-            
-            # Apply volume reduction
-            audio_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32)
-            audio_array = audio_array * 0.7  # 70% volume
-            audio_array = np.clip(audio_array, -32768, 32767).astype(np.int16)
-            
-            # Play in reasonably sized chunks
-            chunk_size = 2048
-            for i in range(0, len(audio_array.tobytes()), chunk_size):
-                if self.interrupt_event.is_set():
-                    print("\n⚠️  Playback interrupted")
-                    break
+                # Check for speech activity
+                if level > self.settings.COMMAND_MIN_VOLUME:
+                    if not speech_started:
+                        speech_started = True
+                        print("\n✓ Speech detected")
                     
-                chunk = audio_array.tobytes()[i:i + chunk_size]
-                self.output_stream.write(chunk)
+                    chunks.append(chunk)
+                    silence_count = 0
+                    last_speech_time = current_time
+                else:
+                    silence_count += 1
+                    
+                    # Only add silence after speech has started
+                    if speech_started:
+                        chunks.append(chunk)
+                
+                # Check various end conditions
+                if speech_started:
+                    # End on long silence after speech
+                    silence_duration = current_time - last_speech_time
+                    if silence_duration > 1.0:  # 1 second of silence
+                        print("\n✓ Command complete (silence)")
+                        break
+                        
+                    # Natural pause handling
+                    if silence_count > natural_pause_threshold:
+                        # Peek at next chunk for upcoming speech
+                        peek_chunk = self.stream.read(1024, exception_on_overflow=False)
+                        peek_level = float(np.abs(np.frombuffer(peek_chunk, dtype=np.int16)).mean())
+                        if peek_level > self.settings.COMMAND_MIN_VOLUME:
+                            # Speech continues, add silence and continue
+                            chunks.append(chunk)
+                            silence_count = 0
+                        elif silence_count > max_silence_frames:
+                            print("\n✓ Command complete (end of speech)")
+                            break
+                
+                else:
+                    # No speech detected within timeout
+                    if elapsed > max_wait_for_speech:
+                        print("\n✗ No speech detected")
+                        return None
+                
+                # Check maximum duration
+                if elapsed > max_recording_duration:
+                    print("\n✓ Command complete (max duration)")
+                    break
+                
                 await asyncio.sleep(0.001)
             
-            self.is_playing = False
-            self.interrupt_event.clear()
+            # Validate recording
+            if not speech_started or len(chunks) < 3:
+                print("\n✗ Command too short")
+                return None
+            
+            # Create WAV data
+            wav_buffer = io.BytesIO()
+            with wave.open(wav_buffer, 'wb') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(self.input_sample_rate)
+                wf.writeframes(b''.join(chunks))
+            
+            wav_data = wav_buffer.getvalue()
+            duration = len(chunks) * 1024 / self.input_sample_rate
+            
+            print(f"\n✓ Command recorded:")
+            print(f"Duration: {duration:.1f}s")
+            print(f"Sample Rate: {self.input_sample_rate}Hz")
+            print(f"Size: {len(wav_data)/1024:.1f}KB")
+            print("\n▶ Sending to Whisper for processing...")
+            
+            return wav_data
             
         except Exception as e:
-            print(f"Error playing audio: {e}")
-            self.is_playing = False
-        finally:
-            self.interrupt_event.clear()
+            print(f"\n✗ Error collecting command: {e}")
+            return None
 
-    async def _handle_wake_word(self, audio_data: bytes):
-        """Handle wake word detection with debug info"""
-        try:
-            print("\n=== Audio Processing Debug ===")
-            audio_array = np.frombuffer(audio_data, dtype=np.int16)
-            duration = len(audio_array) / self.SAMPLE_RATE
-            rms_level = np.sqrt(np.mean(np.square(audio_array)))
-            
-            print(f"Audio size: {len(audio_data)/1024:.1f}KB")
-            print(f"Duration: {duration:.2f}s")
-            print(f"RMS level: {rms_level:.0f}")
-            
-            if self.wake_word_callback:
-                await self.wake_word_callback(audio_data)
-            else:
-                print("No wake word callback registered")
-                
-        except Exception as e:
-            print(f"Error handling wake word: {e}")
-
-    # ... rest of the methods using AUDIO_SETTINGS ...
+    async def stop(self):
+        """Clean shutdown"""
+        self.running = False
+        if self.stream:
+            self.stream.stop_stream()
+            self.stream.close()
+        if self.executor:
+            self.executor.shutdown()

@@ -1,8 +1,10 @@
-from typing import Optional, Union
-from pathlib import Path
-import aiofiles
+from typing import Optional, List
 from openai import AsyncOpenAI
 from .config import Settings
+import wave
+import io
+import aiofiles
+import asyncio
 
 class TextToSpeech:
     def __init__(self):
@@ -10,82 +12,128 @@ class TextToSpeech:
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
         self.cache_dir = self.settings.CACHE_DIR / "tts"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Define system prompts for different contexts
-        self.prompts = {
-            "storytelling": {
-                "voice": "fable",  # Warm and gentle storytelling voice
-                "speed": 0.9,      # Slightly slower for clarity
-                "model": "tts-1-hd",
-                "system_prompt": "You are a warm and engaging storyteller, speaking to young children at bedtime. Your voice should be gentle and soothing, perfect for bedtime stories."
-            },
-            "story_creation": {
-                "voice": "nova",   # Encouraging and supportive voice
-                "speed": 1.0,      # Normal speed for interaction
-                "model": "tts-1-hd",
-                "system_prompt": "You are an encouraging guide helping children create their own stories. Your voice should be supportive and enthusiastic about their creative ideas."
-            }
-        }
-    
-    async def synthesize(self, text: str, context: str = "storytelling") -> Union[bytes, None]:
-        """Convert text to speech using OpenAI's TTS API"""
+
+    async def synthesize(self, text: str) -> Optional[bytes]:
+        """Synthesize text to speech with WAV format"""
         try:
-            print("Sending text to TTS API...")
+            chunks = self._chunk_text(text)
+            print(f"\nSplitting text into {len(chunks)} chunks")
             
-            # Get context-specific settings
-            prompt_settings = self.prompts.get(context, self.prompts["storytelling"])
+            all_audio = []
             
-            # Add narrative markers for better prosody
-            marked_text = self._add_narrative_markers(text, context)
-            
-            print(f"Using voice: {prompt_settings['voice']}")
-            print(f"Context: {context}")
-            
-            response = await self.client.audio.speech.create(
-                model=prompt_settings["model"],
-                voice=prompt_settings["voice"],
-                input=marked_text,
-                speed=prompt_settings["speed"],
-                response_format="wav"
-            )
-            
-            print("TTS response received")
-            print(f"Audio content length: {len(response.content)} bytes")
-            
-            # For debugging, save the last response
-            debug_path = self.cache_dir / "last_response.wav"
-            with open(debug_path, "wb") as f:
-                f.write(response.content)
-            print(f"Debug: Saved audio to {debug_path}")
-            
-            return response.content
-            
-        except Exception as e:
-            print(f"Detailed error in TTS: {str(e)}")
-            return None
-    
-    def _add_narrative_markers(self, text: str, context: str) -> str:
-        """Add SSML-like markers for better prosody"""
-        if context == "storytelling":
-            # Add subtle pauses and emphasis for storytelling
-            text = text.replace(". ", "... ")
-            text = text.replace("! ", "!... ")
-            text = text.replace("? ", "?... ")
-            
-            # Mark dialogue if present
-            if '"' in text:
-                text = text.replace('"', '... "')
+            for i, chunk in enumerate(chunks, 1):
+                print(f"\nProcessing chunk {i}/{len(chunks)}...")
                 
-        elif context == "story_creation":
-            # Add enthusiasm markers for encouragement
-            text = text.replace("!", "!...")
+                try:
+                    # Generate speech as WAV
+                    response = await self.client.audio.speech.create(
+                        model=self.settings.OPENAI_TTS_MODEL,
+                        voice=self.settings.OPENAI_TTS_VOICE,
+                        input=chunk,
+                        response_format="wav"  # Explicitly request WAV
+                    )
+                    
+                    # Get audio content
+                    print("Getting audio content...")
+                    audio_content = await response.read()
+                    print(f"Received {len(audio_content)} bytes of WAV data")
+                    
+                    if audio_content:
+                        all_audio.append(audio_content)
+                        print("Added WAV chunk to audio list")
+                    
+                except Exception as e:
+                    print(f"Error in chunk {i}: {e}")
+                    continue
             
-        return text
-    
-    async def _cache_audio(self, path: Path, audio_data: bytes):
-        """Cache audio data to file"""
-        try:
-            async with aiofiles.open(path, 'wb') as f:
-                await f.write(audio_data)
+            if not all_audio:
+                print("No audio generated")
+                return None
+            
+            # Return single chunk directly
+            if len(all_audio) == 1:
+                return all_audio[0]
+            
+            # Combine WAV chunks if needed
+            return self._combine_wav_chunks(all_audio)
+            
         except Exception as e:
-            print(f"Error caching audio: {e}")
+            print(f"Error in TTS: {e}")
+            return None
+
+    def _chunk_text(self, text: str, max_length: int = 4000) -> List[str]:
+        """Split text into chunks"""
+        chunks = []
+        sentences = text.replace("...", "…").split(".")
+        current_chunk = []
+        current_length = 0
+        
+        for sentence in sentences:
+            if sentence:
+                sentence = sentence.strip() + "."
+                if current_length + len(sentence) > max_length:
+                    if current_chunk:
+                        chunks.append(" ".join(current_chunk))
+                        current_chunk = []
+                        current_length = 0
+                current_chunk.append(sentence)
+                current_length += len(sentence)
+        
+        if current_chunk:
+            chunks.append(" ".join(current_chunk))
+        
+        return chunks
+
+    def _combine_wav_chunks(self, wav_chunks: List[bytes]) -> bytes:
+        """Combine WAV chunks properly handling headers"""
+        if len(wav_chunks) == 1:
+            return wav_chunks[0]
+            
+        # Create output buffer
+        output = io.BytesIO()
+        
+        try:
+            # Read first chunk to get WAV parameters
+            with wave.open(io.BytesIO(wav_chunks[0]), 'rb') as first_wav:
+                params = first_wav.getparams()
+                
+                # Create output WAV with same parameters
+                with wave.open(output, 'wb') as wav_out:
+                    wav_out.setparams(params)
+                    
+                    # Write all chunks' data (skipping headers after first)
+                    for i, chunk in enumerate(wav_chunks):
+                        with wave.open(io.BytesIO(chunk), 'rb') as wav_in:
+                            if i == 0:
+                                wav_out.writeframes(wav_in.readframes(wav_in.getnframes()))
+                            else:
+                                # Skip WAV header (first 44 bytes) for subsequent chunks
+                                wav_in.readframes(1)  # Advance past header
+                                wav_out.writeframes(wav_in.readframes(wav_in.getnframes()))
+            
+            return output.getvalue()
+            
+        except Exception as e:
+            print(f"Error combining WAV chunks: {e}")
+            # Return first chunk if combination fails
+            return wav_chunks[0]
+
+    async def speak(self, text: str):
+        """Convert text to speech and play it"""
+        try:
+            if isinstance(text, dict):
+                text = text.get('text', '')
+                
+            print("\n▶ Generating speech...")
+            audio_data = await self.synthesize(text)
+            
+            if audio_data:
+                print("\n▶ Playing audio...")
+                await self.play(audio_data)
+            else:
+                print("No audio generated")
+                
+        except Exception as e:
+            print(f"Error in TTS: {e}")
+            import traceback
+            traceback.print_exc()

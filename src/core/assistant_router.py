@@ -1,9 +1,77 @@
+"""
+Assistant Router for Messi Assistant
+----------------------------------
+
+This module handles the routing and processing of user requests based on detected intents.
+It serves as the central decision-making component for understanding and responding to
+user interactions.
+
+Key Features:
+    1. Intent Detection:
+        - Pattern-based intent recognition
+        - Multi-category intent scoring
+        - Confidence level calculation
+        - Learning from interactions
+    
+    2. Request Routing:
+        - Story generation
+        - Educational responses
+        - Tutoring assistance
+        - Task handling
+        - Timer management
+        - Emotional support
+    
+    3. Context Management:
+        - Conversation state tracking
+        - Topic relationships
+        - Entity tracking
+        - Follow-up detection
+    
+    4. Response Generation:
+        - Context-aware prompts
+        - Cache-aware responses
+        - Adaptive conversation flow
+        - Age-appropriate content
+
+Components:
+    - Intent Patterns: Defined patterns for each type of interaction
+    - Topic Relationships: Connected concepts for context
+    - Conversation Context: Active state of interaction
+    - Response Cache: Previously generated responses
+    - Intent Learner: System for improving intent detection
+
+Usage:
+    router = AssistantRouter()
+    
+    # Detect intent
+    intent = await router.detect_intent("tell me a story about a dragon")
+    
+    # Route request
+    response = await router.route_request(user_text)
+
+Integration:
+    Works with:
+    - IntentLearner for continuous improvement
+    - ResponseCache for efficient responses
+    - ConversationManager for context
+    - Various skill-specific handlers
+
+Author: Your Name
+Created: 2024-01-24
+"""
+
 from openai import AsyncOpenAI
-from typing import Dict
+from typing import Dict, Optional, Tuple
 from .config import Settings
 import json
 import time
 from .cache_manager import ResponseCache
+import asyncio
+from .intent_learner import IntentLearner
+from .skills.available.bedtime_story import BedtimeStory
+from .skills import SkillManager
+from .context_manager import ContextManager
+from datetime import datetime
 
 class AssistantRouter:
     def __init__(self):
@@ -50,35 +118,55 @@ class AssistantRouter:
             "story": {
                 "keywords": [
                     "story", "tale", "tell me", "read", "once upon",
-                    "dragon", "princess", "adventure", "fairy tale"
+                    "bedtime", "fairy tale"
                 ],
-                "phrases": [
-                    "can you tell", "tell me about", "read me",
-                    "how about a story", "i want to hear"
+                "story_types": [
+                    "adventure", "animal", "fairy tale", "bedtime",
+                    "funny", "magical", "educational"
                 ],
                 "characters": [
-                    "dragon", "princess", "knight", "fairy",
-                    "wizard", "unicorn", "robot", "pirate"
-                ],
-                "themes": [
-                    "magic", "adventure", "fantasy", "space",
-                    "animals", "friendship", "bedtime"
+                    "dragon", "princess", "cat", "dog", "robot",
+                    "wizard", "fairy", "unicorn"
                 ]
             },
             "education": {
                 "keywords": [
-                    "what", "why", "how", "when", "where",
-                    "explain", "teach", "learn", "help me understand"
+                    "what is", "how does", "why does", "explain",
+                    "teach me about", "tell me about", "learn about"
                 ],
                 "subjects": [
-                    "math", "science", "history", "nature",
-                    "animals", "space", "weather"
+                    "science", "nature", "animals", "space",
+                    "history", "world", "weather"
                 ]
             },
-            "conversation": {
+            "tutor": {
                 "keywords": [
-                    "chat", "talk", "discuss", "let's",
-                    "can we", "what do you think"
+                    "help me with", "practice", "solve", "how to",
+                    "show me how", "teach me to"
+                ],
+                "subjects": {
+                    "math": ["add", "subtract", "multiply", "divide", "equation"],
+                    "language": ["spell", "write", "read", "grammar"],
+                    "science": ["experiment", "chemistry", "physics"],
+                    "programming": ["code", "python", "program"]
+                }
+            },
+            "timer": {
+                "keywords": [
+                    "timer", "set timer", "remind", "wait", "alarm",
+                    "countdown"
+                ],
+                "units": ["seconds", "minutes", "hours"]
+            },
+            "conversation": {
+                "greetings": [
+                    "hello", "hi", "hey", "good morning", "good evening"
+                ],
+                "farewells": [
+                    "goodbye", "bye", "see you", "good night"
+                ],
+                "gratitude": [
+                    "thank you", "thanks", "appreciate"
                 ]
             }
         }
@@ -91,6 +179,24 @@ class AssistantRouter:
             "consecutive_story_requests": 0,
             "consecutive_education_requests": 0
         }
+        
+        # Initialize timer storage
+        self.active_timers = {}
+        self.timer_id = 0
+        
+        self.intent_learner = IntentLearner()
+        self.skill_manager = SkillManager()
+        self.story_skill = BedtimeStory()
+        self.context_manager = ContextManager()
+        
+        # Add system prompt
+        self.system_prompt = """
+        You are a helpful assistant for children. Keep responses:
+        1. Simple and clear
+        2. Age-appropriate
+        3. Educational when possible
+        4. Engaging and friendly
+        """
     
     async def _create_contextual_prompt(self, user_input: str, intent: str) -> list:
         """Create a context-aware system prompt using cache history"""
@@ -144,53 +250,210 @@ If referring to cached information, acknowledge it naturally.
         
         return "\n".join(formatted)
     
-    async def route_request(self, user_input: str, time_of_day: str = "evening") -> Dict:
+    async def route_request(self, text: str) -> Optional[Dict]:
+        """Route the request to appropriate handler"""
         try:
-            print("\n=== Assistant Router ===")
-            print(f"Processing request: '{user_input}'")
+            print("\n▶ Processing request...")
             
-            # Detect intent with enhanced system
-            intent = await self.detect_intent(user_input)
-            print(f"Detected intent: {intent['primary_intent']} (confidence: {intent['confidence']:.2f})")
+            # Get intent scores
+            intent_scores = await self.intent_learner.get_intent_scores(text)
             
-            # Create base result
-            result = {
-                "text": "",
-                "skill": intent["primary_intent"],
-                "intent": "tell_story" if intent["primary_intent"] == "story" else "answer_question",
-                "mode": "storytelling" if intent["primary_intent"] == "story" else "informative",
-                "parameters": {
-                    "question": user_input,
-                    "context": {
-                        "topic": self.conversation_context["current_topic"],
-                        "mentioned_entities": list(self.conversation_context["mentioned_entities"]),
-                        "conversation_history": self.conversation_context["conversation_history"][-3:],
-                        "intent_confidence": intent["confidence"],
-                        "time_of_day": time_of_day
-                    }
+            print("\nIntent Scores:")
+            for intent, score in intent_scores.items():
+                print(f"- {intent}: {score:.2f}")
+            
+            # Get highest scoring intent
+            intent = max(intent_scores.items(), key=lambda x: x[1])[0]
+            score = intent_scores[intent]
+            
+            print(f"\nIntent Detection:")
+            print(f"Text: '{text}'")
+            print(f"Intent: {intent} ({score:.2f})")
+            
+            # Route to appropriate skill
+            skill = self.skill_manager.get_skill(intent)
+            if skill:
+                return await skill.handle(text)
+            else:
+                print(f"Skill not found: {intent}")
+                print(f"Available skills: {self.skill_manager.list_skills()}")
+                return {
+                    "text": "I'm not sure how to help with that.",
+                    "context": "error"
                 }
+                
+        except Exception as e:
+            print(f"Error routing request: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "text": "I'm having trouble processing that request.",
+                "context": "error"
             }
+    
+    async def _route_story_request(self, text: str, intent: Dict) -> Dict:
+        """Handle story-specific routing"""
+        # Check if we're in the middle of a story
+        if hasattr(self, 'current_story') and self.current_story:
+            return await self.skill_manager.execute({
+                "skill": "story",
+                "intent": "continue_story",
+                "text": text,
+                "parameters": {
+                    "current_story": self.current_story,
+                    "current_position": self.current_story_position
+                }
+            })
+        
+        # Check if we need a theme
+        if not intent["parameters"].get("theme"):
+            return await self.skill_manager.execute({
+                "skill": "story",
+                "intent": "ask_theme",
+                "text": "What kind of story would you like to hear?"
+            })
+        
+        # Start new story
+        return await self.skill_manager.execute({
+            "skill": "story",
+            "intent": "tell_story",
+            "text": text,
+            "parameters": intent["parameters"]
+        })
+
+    async def _route_timer_request(self, text: str, intent: Dict) -> Dict:
+        """Handle timer-specific routing"""
+        # Check if we need duration
+        if not intent["parameters"].get("duration"):
+            return await self.skill_manager.execute({
+                "skill": "timer",
+                "intent": "ask_duration",
+                "text": "How long would you like the timer for?"
+            })
+        
+        return await self.skill_manager.execute({
+            "skill": "timer",
+            "intent": "set_timer",
+            "text": text,
+            "parameters": intent["parameters"]
+        })
+
+    async def _route_education_request(self, text: str, intent: Dict) -> Dict:
+        """Handle education-specific routing"""
+        # Add context from previous interactions
+        context = {
+            "previous_topic": getattr(self, 'last_education_topic', None),
+            "mentioned_entities": getattr(self, 'education_entities', set()),
+            "last_question": getattr(self, 'last_question', None)
+        }
+        
+        return await self.skill_manager.execute({
+            "skill": "education",
+            "intent": "answer_question",
+            "text": text,
+            "parameters": {
+                **intent["parameters"],
+                "context": context
+            }
+        })
+
+    async def _route_tutor_request(self, text: str, intent: Dict) -> Dict:
+        """Handle tutor-specific routing"""
+        # Check if we need subject specification
+        if not intent["parameters"].get("subject"):
+            return await self.skill_manager.execute({
+                "skill": "tutor",
+                "intent": "ask_subject",
+                "text": "What subject would you like help with?"
+            })
+        
+        return await self.skill_manager.execute({
+            "skill": "tutor",
+            "intent": "teach",
+            "text": text,
+            "parameters": intent["parameters"]
+        })
+
+    async def _route_conversation_request(self, text: str, intent: Dict) -> Dict:
+        """Handle conversation-specific routing"""
+        # Add conversation history context
+        context = {
+            "previous_topic": getattr(self, 'last_conversation_topic', None),
+            "conversation_history": getattr(self, 'conversation_history', [])[-5:],
+            "user_preferences": getattr(self, 'user_preferences', {})
+        }
+        
+        return await self.skill_manager.execute({
+            "skill": "conversation",
+            "intent": "chat",
+            "text": text,
+            "parameters": {
+                **intent["parameters"],
+                "context": context
+            }
+        })
+    
+    async def handle_story_request(self, text: str, intent: Dict) -> Dict:
+        """Handle story-related requests"""
+        try:
+            # If theme is present, start new story
+            if intent.get("theme"):
+                print(f"▶ Creating story with theme: {intent['theme']}")
+                return await self.story_skill.handle({
+                    "text": text,
+                    "intent": "tell_story",
+                    "parameters": {
+                        "theme": intent["theme"]
+                    }
+                })
             
-            # Add specific parameters based on intent
-            if intent["primary_intent"] == "story":
-                result["parameters"]["theme"] = self._extract_story_theme(user_input)
-            else:  # education
-                result["parameters"]["subject"] = self._extract_educational_subject(user_input)
-            
-            # Get response from OpenAI with appropriate prompt
-            messages = await self._create_contextual_prompt(user_input, intent["primary_intent"])
-            response = await self.client.chat.completions.create(
-                model=self.settings.OPENAI_CHAT_MODEL,
-                messages=messages,
-                temperature=0.7
-            )
-            result["text"] = response.choices[0].message.content
-            
-            return result
+            # If no theme but story intent, ask for theme
+            else:
+                print("▶ Requesting story theme")
+                return await self.story_skill.handle({
+                    "text": text,
+                    "intent": "ask_theme",
+                    "prompt": "What kind of story would you like to hear?"
+                })
             
         except Exception as e:
-            print(f"✗ Error in router: {e}")
-            return self._create_error_response(user_input, str(e))
+            print(f"Error handling story request: {e}")
+            return {
+                "text": "I had trouble with that story. Would you like to try a different one?",
+                "context": "error"
+            }
+    
+    def _extract_story_elements(self, text: str) -> Dict:
+        """Extract story elements from request"""
+        elements = {
+            "characters": [],
+            "theme": "general",
+            "style": "simple"
+        }
+        
+        # Extract characters
+        text_lower = text.lower()
+        for animal in ["cat", "dog", "fox", "hen", "rabbit", "bear", "mouse"]:
+            if animal in text_lower:
+                elements["characters"].append(animal)
+        
+        # Determine theme
+        if any(word in text_lower for word in ["adventure", "journey", "quest"]):
+            elements["theme"] = "adventure"
+        elif any(word in text_lower for word in ["magic", "wizard", "fairy"]):
+            elements["theme"] = "fantasy"
+        elif any(word in text_lower for word in ["learn", "lesson", "moral"]):
+            elements["theme"] = "educational"
+        
+        # Determine style
+        if "funny" in text_lower or "silly" in text_lower:
+            elements["style"] = "humorous"
+        elif "scary" in text_lower:
+            elements["style"] = "spooky"
+        elif "bedtime" in text_lower:
+            elements["style"] = "gentle"
+            
+        return elements
     
     def _adapt_cached_response(self, cached_response: Dict) -> Dict:
         """Adapt cached response to current context"""
@@ -341,48 +604,78 @@ If referring to cached information, acknowledge it naturally.
         scores = {
             "story": 0.0,
             "education": 0.0,
+            "tutor": 0.0,
+            "timer": 0.0,
             "conversation": 0.0
         }
         
-        # Story detection
-        story_keywords = ["story", "tell me", "once upon", "tale", "adventure"]
-        story_subjects = ["cat", "dog", "dragon", "princess", "robot", "animal"]
-        
-        for keyword in story_keywords:
-            if keyword in text_lower:
-                scores["story"] += 1.5
-                
-        for subject in story_subjects:
-            if subject in text_lower:
-                scores["story"] += 1.0
-        
-        # Education detection
-        education_keywords = ["what", "why", "how", "when", "where", "explain"]
-        for keyword in education_keywords:
-            if keyword in text_lower:
-                scores["education"] += 1.0
-        
-        # Conversation detection
-        conversation_keywords = ["hello", "hi", "hey", "thanks", "thank you", "bye"]
-        for keyword in conversation_keywords:
-            if keyword in text_lower:
-                scores["conversation"] += 1.0
-        
+        # Education patterns
+        if any(word in text_lower for word in ["what", "where", "when", "why", "how"]):
+            scores["education"] += 1.5
+            
+        if any(word in text_lower for word in ["capital", "country", "city", "explain", "tell me about"]):
+            scores["education"] += 1.0
+            
+        # Story patterns
+        if any(word in text_lower for word in ["story", "tale", "once upon", "adventure"]):
+            scores["story"] += 1.5
+            
         # Get highest scoring intent
         max_score = max(scores.values())
         primary_intent = max(scores.items(), key=lambda x: x[1])[0]
-        confidence = max_score / 5.0  # Normalize to 0-1
+        confidence = max_score / 3.0  # Normalize to 0-1
         
-        print(f"\nIntent Detection:")
-        print(f"Text: '{text}'")
-        print(f"Scores: {scores}")
-        print(f"Selected: {primary_intent} ({confidence:.2f})")
+        print(f"\nIntent Scores:")
+        for intent, score in scores.items():
+            print(f"- {intent}: {score:.2f}")
         
         return {
             "primary_intent": primary_intent,
             "confidence": confidence,
-            "scores": scores
+            "scores": scores,
+            "parameters": {
+                "question": text if primary_intent == "education" else None,
+                "theme": text if primary_intent == "story" else None
+            }
         }
+    
+    def _extract_parameters(self, text: str, intent: str) -> Dict:
+        """Extract relevant parameters based on intent"""
+        params = {}
+        
+        if intent == "story":
+            # Extract story theme
+            for story_type in self.intent_patterns["story"]["story_types"]:
+                if story_type in text:
+                    params["theme"] = story_type
+                    break
+            # Extract characters
+            for character in self.intent_patterns["story"]["characters"]:
+                if character in text:
+                    params["character"] = character
+                    break
+                    
+        elif intent == "timer":
+            # Extract time values
+            import re
+            time_match = re.search(r'(\d+)\s*(second|minute|hour|sec|min|hr)s?', text)
+            if time_match:
+                value, unit = time_match.groups()
+                params["duration"] = int(value)
+                params["unit"] = unit
+                
+        elif intent in ["education", "tutor"]:
+            # Extract subject and topic
+            for subject in self.intent_patterns[intent].get("subjects", []):
+                if subject in text:
+                    params["subject"] = subject
+                    # Extract surrounding context as topic
+                    words = text.split()
+                    subject_idx = words.index(subject)
+                    params["topic"] = " ".join(words[max(0, subject_idx-2):subject_idx+3])
+                    break
+        
+        return params
     
     def _create_error_response(self, user_input: str, error: str) -> Dict:
         """Create an error response"""
@@ -412,3 +705,140 @@ If referring to cached information, acknowledge it naturally.
                 return subject
         
         return "general"
+    
+    async def _handle_timer_request(self, text: str) -> Dict:
+        """Handle timer requests"""
+        try:
+            # Extract time from request
+            time_value, time_unit = self._parse_time(text)
+            
+            if time_value is None:
+                return {
+                    "text": "I couldn't understand the time duration. Please specify like '5 minutes' or '30 seconds'.",
+                    "type": "timer_error"
+                }
+            
+            # Create timer ID
+            self.timer_id += 1
+            timer_id = f"timer_{self.timer_id}"
+            
+            # Convert to seconds
+            seconds = self._convert_to_seconds(time_value, time_unit)
+            
+            # Start timer
+            print(f"\n⏰ Starting timer for {time_value} {time_unit}")
+            asyncio.create_task(self._run_timer(timer_id, seconds))
+            
+            return {
+                "text": f"I've set a timer for {time_value} {time_unit}. I'll notify you when it's done!",
+                "type": "timer_start",
+                "timer_id": timer_id,
+                "duration": seconds
+            }
+            
+        except Exception as e:
+            print(f"Error setting timer: {e}")
+            return {
+                "text": "Sorry, I had trouble setting the timer. Please try again.",
+                "type": "timer_error"
+            }
+
+    def _parse_time(self, text: str) -> Tuple[Optional[int], Optional[str]]:
+        """Extract time value and unit from text"""
+        text_lower = text.lower()
+        words = text_lower.split()
+        
+        # Find numbers in text
+        numbers = []
+        for word in words:
+            try:
+                numbers.append(int(word))
+            except ValueError:
+                continue
+        
+        if not numbers:
+            return None, None
+        
+        time_value = numbers[0]
+        
+        # Find time unit
+        for unit, unit_words in self.intent_patterns["timer"]["time_units"].items():
+            if any(word in text_lower for word in unit_words):
+                return time_value, unit
+        
+        return None, None
+
+    def _convert_to_seconds(self, value: int, unit: str) -> int:
+        """Convert time to seconds"""
+        conversions = {
+            "seconds": 1,
+            "minutes": 60,
+            "hours": 3600
+        }
+        return value * conversions[unit]
+
+    async def _run_timer(self, timer_id: str, seconds: int):
+        """Run timer and notify when done"""
+        try:
+            self.active_timers[timer_id] = True
+            
+            # Show countdown every minute for long timers, every 10 seconds for short ones
+            update_interval = 60 if seconds > 300 else 10
+            
+            while seconds > 0 and self.active_timers[timer_id]:
+                await asyncio.sleep(update_interval)
+                seconds -= update_interval
+                if seconds > 0:
+                    print(f"\n⏰ Timer update: {seconds//60}m {seconds%60}s remaining")
+            
+            if self.active_timers[timer_id]:
+                print(f"\n🔔 Timer {timer_id} finished!")
+                # Here you could add sound playback or other notification methods
+                
+            del self.active_timers[timer_id]
+            
+        except Exception as e:
+            print(f"Error in timer: {e}")
+
+    async def _generate_story_response(self, text: str, elements: Dict) -> str:
+        """Generate a story based on request and elements"""
+        try:
+            # Create story prompt
+            prompt = self._create_story_prompt(text, elements)
+            
+            # Generate story using OpenAI
+            response = await self.client.chat.completions.create(
+                model=self.settings.OPENAI_CHAT_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a creative storyteller who creates engaging, age-appropriate stories."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                max_tokens=2000
+            )
+            
+            return response.choices[0].message.content
+            
+        except Exception as e:
+            print(f"Error generating story response: {e}")
+            return "I'm sorry, I had trouble creating that story. Would you like to try another one?"
+
+    def _create_story_prompt(self, text: str, elements: Dict) -> str:
+        """Create a detailed story prompt"""
+        prompt_parts = [
+            "Please create an engaging story with the following elements:",
+            f"\nRequest: {text}",
+            "\nGuidelines:",
+            "- Make it engaging and descriptive",
+            "- Include dialogue between characters",
+            "- Add sensory details and emotions",
+            "- Create a clear beginning, middle, and end",
+            "- Include a subtle moral or lesson",
+            f"\nCharacters: {', '.join(elements['characters']) if elements['characters'] else 'Create appropriate characters'}",
+            f"Theme: {elements['theme']}",
+            f"Style: {elements['style']}",
+            "\nFormat the story with proper paragraphs and include a title.",
+            "\nEnd with a gentle question to engage the listener."
+        ]
+        
+        return "\n".join(prompt_parts)

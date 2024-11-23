@@ -8,44 +8,33 @@ class Education:
         self.settings = Settings()
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
     
-    async def handle(self, route: Dict) -> Dict:
+    async def handle(self, text: str) -> Dict:
         """Handle educational questions"""
         try:
-            question = route["parameters"]["question"]
-            context = route["parameters"].get("context", {})
+            print("\n=== Education Skill ===")
+            print(f"Question: '{text}'")
             
-            # If response is from cache, add context-aware prefix
-            if route.get("from_cache"):
-                prefix = self._get_cache_prefix(context)
-                return {
-                    "text": f"{prefix} {route['text']}",
-                    "context": "education",
-                    "auto_continue": False
-                }
+            # Create educational prompt
+            system_prompt = """
+            You are a friendly educational assistant for children.
+            Provide simple, clear, and engaging answers.
+            Include interesting facts but keep explanations brief.
+            Use child-friendly language and examples.
+            Keep responses under 3 sentences when possible.
+            """
             
-            # Create prompt with context
-            prompt = f"""Question: {question}
-Previous topic: {context.get('previous_topic', 'none')}
-Related entities: {', '.join(context.get('mentioned_entities', []))}
-Previous question: {context.get('last_question', 'none')}
-
-Provide a child-friendly answer that:
-1. Builds on previous knowledge if related
-2. Makes connections to familiar concepts
-3. Encourages further curiosity
-"""
-
             response = await self.client.chat.completions.create(
                 model=self.settings.OPENAI_CHAT_MODEL,
                 messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": question}
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text}
                 ],
-                temperature=0.7
+                temperature=0.7,
+                max_tokens=150  # Keep responses concise
             )
             
-            answer = response.choices[0].message.content
-            print(f"Answer: {answer}")
+            answer = response.choices[0].message.content.strip()
+            print(f"Answer: '{answer}'")
             
             return {
                 "text": answer,
@@ -56,22 +45,12 @@ Provide a child-friendly answer that:
         except Exception as e:
             print(f"Error in education handler: {e}")
             return {
-                "text": "I'm not sure about that. Would you like to hear a story instead?",
+                "text": "I'm not sure about that. Would you like to try asking another way?",
                 "context": "error"
             }
 
-    def _get_cache_prefix(self, context: Dict) -> str:
-        """Get context-aware prefix for cached responses"""
-        prefixes = [
-            "I remember this one!",
-            "As we discussed before,",
-            "Let me tell you again about this.",
-            "This is interesting to revisit:"
-        ]
-        return random.choice(prefixes)
-
 skill_manifest = {
     "name": "education",
-    "intents": ["answer_question", "explain_topic"],
-    "description": "Educational answers and explanations for children"
+    "description": "Educational answers and explanations for children",
+    "intents": ["education", "answer_question", "explain_topic"]
 } 

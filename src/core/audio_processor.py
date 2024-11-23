@@ -1,3 +1,61 @@
+"""
+Audio Processing System for Messi Assistant
+----------------------------------------
+
+This module provides centralized audio processing with standardized settings
+and quality control. It handles all audio transformations and analysis for
+the assistant's audio pipeline.
+
+Key Features:
+    1. Audio Processing:
+        - Sample rate conversion
+        - Channel management
+        - Level normalization
+        - Quality metrics
+    
+    2. Quality Control:
+        - Voice activity detection
+        - Signal-to-noise analysis
+        - Level monitoring
+        - Duration validation
+    
+    3. Audio Analysis:
+        - RMS level calculation
+        - Peak detection
+        - Voice percentage
+        - SNR calculation
+    
+    4. Format Management:
+        - WAV file handling
+        - Buffer management
+        - Temporary file handling
+        - Multi-rate support
+
+Settings:
+    - Sample rates (input/processing/output)
+    - Audio formats (bit depth, channels)
+    - Quality thresholds
+    - Processing parameters
+
+Usage:
+    processor = AudioProcessor()
+    
+    # Process audio
+    audio_array, metrics = await processor.process_input(audio_data)
+    
+    # Save processed audio
+    wav_path = await processor.save_wav(audio_array, sample_rate, "output.wav")
+
+Integration:
+    Works with:
+    - AudioInterface for I/O
+    - SpeechManager for STT
+    - TTS for speech synthesis
+
+Author: Your Name
+Created: 2024-01-24
+"""
+
 import numpy as np
 from typing import Optional, Tuple
 import wave

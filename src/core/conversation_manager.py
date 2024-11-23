@@ -1,3 +1,63 @@
+"""
+Conversation Manager for Messi Assistant
+--------------------------------------
+
+This module manages the conversation state and context for the assistant,
+ensuring coherent and contextually appropriate interactions over time.
+
+Key Features:
+    1. Context Management:
+        - Tracks current conversation topic
+        - Maintains conversation history
+        - Manages entity references
+        - Handles topic transitions
+    
+    2. State Tracking:
+        - Active conversation status
+        - Time-based context expiry
+        - Topic relationships
+        - User engagement levels
+    
+    3. Conversation Flow:
+        - Natural topic progression
+        - Context-aware responses
+        - Follow-up handling
+        - Conversation recovery
+    
+    4. Memory Management:
+        - Short-term conversation memory
+        - Long-term topic memory
+        - Entity relationship tracking
+        - Context pruning
+
+Configuration:
+    - Memory window size
+    - Context expiry time
+    - Topic transition thresholds
+    - Entity reference limits
+
+Usage:
+    manager = ConversationManager()
+    
+    # Start conversation
+    await manager.start_conversation()
+    
+    # Update context
+    await manager.update_context(user_input, response)
+    
+    # End conversation
+    await manager.end_conversation()
+
+Integration:
+    Works with:
+    - AssistantRouter for intent context
+    - ResponseCache for historical context
+    - Various skill handlers for specialized context
+
+Author: Your Name
+Created: 2024-01-24
+"""
+
 from enum import Enum
 from typing import Optional, Set, Dict
 import time

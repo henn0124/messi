@@ -16,7 +16,7 @@ class BedtimeStory:
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
         
         # Create absolute paths
-        self.base_path = Path(__file__).parent.parent.parent.parent.resolve()
+        self.base_path = self.settings.BASE_DIR
         self.story_path = self.base_path / "content" / "stories"
         self.generated_path = self.story_path / "generated"
         self.arc_path = self.story_path / "arcs"

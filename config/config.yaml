@@ -1,0 +1,56 @@
+# Application Configuration
+models:
+  chat: gpt-4-1106-preview
+  whisper: whisper-1
+  tts: tts-1
+  tts_voice: fable
+  tts_speed: 1.0
+  temperature: 0.7
+  max_tokens: 4096
+
+# Audio Settings
+audio:
+  input:
+    device_index: 1
+    device_name: "Maono Elf"
+    native_rate: 44100
+    processing_rate: 16000
+    channels: 1
+    chunk_size: 1024
+    buffer_size: 8192
+    pre_emphasis: 0.97
+    silence_threshold: 90
+  
+  output:
+    device_index: 0
+    device_name: "bcm2835 Headphones"
+    rate: 24000
+    volume: 1.0
+    chunk_size: 2048
+
+# Wake Word Settings
+wake_word:
+  name: "hey messy"
+  model_name: "hey-messy_en_raspberry-pi_v3_0_0.ppn"
+  threshold: 0.75
+  min_volume: 100
+  max_volume: 4500
+  detection_window: 2.0
+  consecutive_frames: 1
+  retry_count: 3
+
+# Command Settings
+command:
+  min_duration: 0.5
+  max_duration: 10.0
+  min_volume: 90
+  silence_timeout: 0.5
+  pre_buffer: 0.1
+  max_silence_chunks: 20
+
+# Logging Settings
+logging:
+  level: INFO
+  file_rotation: "1 MB"
+  backup_count: 5
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

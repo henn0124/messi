@@ -1,0 +1,17 @@
+=== Wake Word Calibration Results ===
+Date: 2024-11-22 19:17:18
+
+Raw Metrics:
+Ambient Noise Mean: 61
+Wake Word Mean: 128
+Wake Word Std Dev: 212
+Successful Detections: 5/5
+Missed Detections: 0
+False Positives: 0
+
+Recommended Settings:
+WAKE_WORD_MIN_VOLUME = 100
+WAKE_WORD_MAX_VOLUME = 384.5633923451835
+WAKE_WORD_THRESHOLD = 0.75
+WAKE_WORD_DETECTION_WINDOW = 2.0
+WAKE_WORD_CONSECUTIVE_FRAMES = 1

@@ -1,3 +1,80 @@
+"""
+Audio Assets Manager for Messi Assistant
+-------------------------------------
+
+This module manages pre-recorded audio phrases and transitions used by the assistant
+for natural and varied responses. It works in conjunction with the audio asset
+generator script (scripts/generate_audio_assets.py) for maintaining and updating
+the audio library.
+
+Key Features:
+    1. Phrase Management:
+        - Categorized audio phrases
+        - Random variation selection
+        - Missing asset detection
+        - Directory structure maintenance
+    
+    2. Audio Categories:
+        - Conversation Flow (greetings, goodbyes)
+        - Transitions (thinking, continue)
+        - Questions (clarification, repetition)
+        - Feedback (success, error)
+        - Story Elements (start, end, transitions)
+    
+    3. Asset Organization:
+        - Category-based directories
+        - Consistent naming conventions
+        - Version tracking
+        - Asset verification
+    
+    4. Integration:
+        Works with generate_audio_assets.py for:
+        - Creating new assets
+        - Updating existing phrases
+        - Adding new categories
+        - Maintaining consistency
+
+File Structure:
+    /assets/audio/phrases/
+        /greeting/
+            - hello.wav
+            - hi_there.wav
+            - welcome_back.wav
+        /goodbye/
+            - goodbye.wav
+            - bye_for_now.wav
+        ... (other categories)
+
+Asset Generation:
+    New assets can be generated using:
+    python scripts/generate_audio_assets.py
+    
+    The generator script:
+    - Uses OpenAI's TTS API
+    - Maintains consistent voice
+    - Handles missing assets
+    - Verifies generations
+
+Usage:
+    manager = AudioAssetManager()
+    
+    # Get random greeting
+    greeting_path = manager.get_phrase(AudioPhraseType.GREETING)
+    
+    # Check for missing assets
+    missing = manager.list_missing_phrases()
+
+Adding New Phrases:
+    1. Add new type to AudioPhraseType enum
+    2. Add phrases to PHRASES dictionary
+    3. Update generate_audio_assets.py
+    4. Run generator script
+    5. Verify new assets
+
+Author: Your Name
+Created: 2024-01-24
+"""
+
 from enum import Enum
 from pathlib import Path
 from typing import Optional

@@ -1,0 +1,27 @@
+{
+  "intent_counts": {
+    "story": 7,
+    "education": 3
+  },
+  "confidence_levels": {
+    "8/10": 4,
+    "10/10": 1,
+    "6/10": 2,
+    "0/10": 3
+  },
+  "common_patterns": {
+    "tell": 4,
+    "story": 4,
+    "about": 4,
+    "dragon": 3,
+    "named": 4,
+    "fox?": 1,
+    "funny.": 1,
+    "starryeyed?": 1,
+    "butterfly.": 1,
+    "what's": 3,
+    "capital": 3,
+    "france?": 3
+  },
+  "improvement_areas": []
+}
