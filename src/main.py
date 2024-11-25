@@ -81,6 +81,7 @@ class MessiAssistant:
         self.speech = SpeechManager()
         self.router = AssistantRouter()
         self.running = False
+        self.executor = ThreadPoolExecutor(max_workers=2)
         
         # Initialize OpenAI client
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
@@ -98,16 +99,17 @@ class MessiAssistant:
             print(f"Audio config: {audio_config}")
             
             print("\n2. Setting up audio stream...")
-            await self.audio.initialize()
-            
-            if not self.audio.stream:
-                print("❌ Failed to initialize audio stream!")
+            if not await self.audio.initialize():
+                print("❌ Failed to initialize audio!")
                 return
             
             print("✓ Audio stream initialized")
-            print(f"Device: {self.audio.stream._device_info['name']}")
-            print(f"Rate: {self.audio.stream._rate}Hz")
-            print(f"Channels: {self.audio.stream._channels}")
+            # Get device info safely
+            device_index = audio_config.get('input', {}).get('device_index', 1)
+            device_info = self.audio.p.get_device_info_by_index(device_index)
+            print(f"Device: {device_info['name']}")
+            print(f"Rate: {device_info['defaultSampleRate']}Hz")
+            print(f"Channels: {device_info['maxInputChannels']}")
             
             # Start wake word detection with callback
             print("\n3. Starting wake word detection...")
@@ -131,7 +133,8 @@ class MessiAssistant:
         print("\nStopping Messi Assistant...")
         self.running = False
         await self.audio.stop()
-        self.executor.shutdown(wait=True)
+        if hasattr(self, 'executor'):
+            self.executor.shutdown(wait=True)
 
     async def on_wake_word(self, audio_data: bytes):
         """Handle wake word detection"""
@@ -157,10 +160,43 @@ class MessiAssistant:
             
             await self.tts.speak(response)
             
+            # Handle continued conversation
+            if response.get("conversation_active") and response.get("auto_continue"):
+                print("\nConversation active, listening for follow-up...")
+                # Start listening for follow-up without wake word
+                await self.listen_for_followup()
+            
         except Exception as e:
             print(f"Error processing command: {e}")
             import traceback
             traceback.print_exc()
+
+    async def listen_for_followup(self):
+        """Listen for follow-up with better handling"""
+        try:
+            # Give user time to start speaking
+            await asyncio.sleep(0.5)
+            
+            # Collect audio for follow-up
+            audio_data = await self.audio._collect_command_audio(duration=5.0)  # Longer duration
+            
+            if audio_data:
+                text = await self.speech.process_audio(audio_data)
+                
+                # Check if we got a complete question
+                if text and not text.endswith('...'):
+                    await self.on_wake_word(audio_data)
+                else:
+                    print("\nIncomplete follow-up detected")
+                    await self.tts.speak({
+                        "text": "I didn't catch that. Could you repeat your question?",
+                        "context": "clarification",
+                        "auto_continue": True
+                    })
+                    await self.listen_for_followup()  # Try again
+            
+        except Exception as e:
+            print(f"Error in follow-up: {e}")
 
 if __name__ == "__main__":
     # Create and start assistant

@@ -45,11 +45,11 @@ class TextToSpeech:
             all_audio = []
             
             for i, chunk in enumerate(chunks, 1):
-                print(f"\nProcessing chunk {i}/{len(chunks)}...")
-                
                 try:
-                    # Generate speech
+                    print(f"\nProcessing chunk {i}/{len(chunks)}...")
                     print("Calling OpenAI TTS API...")
+                    
+                    # Get audio content directly
                     response = await self.client.audio.speech.create(
                         model=self.settings.OPENAI_TTS_MODEL,
                         voice=self.settings.OPENAI_TTS_VOICE,
@@ -57,15 +57,13 @@ class TextToSpeech:
                         response_format="wav"
                     )
                     
-                    # Get audio content - use read() directly
-                    audio_content = await response.read()
-                    print(f"Received {len(audio_content)} bytes of WAV audio")
+                    print(f"Response type: {type(response)}")
                     
-                    if audio_content:
-                        all_audio.append(audio_content)
-                        print("Added chunk to audio list")
+                    if response:
+                        all_audio.append(response)
+                        print(f"✓ Audio chunk {i} added (type: {type(response)})")
                     else:
-                        print("No audio content received")
+                        print(f"✗ No audio for chunk {i}")
                     
                 except Exception as e:
                     print(f"Error in chunk {i}: {e}")
@@ -79,13 +77,13 @@ class TextToSpeech:
             
             # If only one chunk, return it directly
             if len(all_audio) == 1:
-                print(f"Returning single chunk of {len(all_audio[0])} bytes")
+                print("✓ Audio ready")
                 return all_audio[0]
             
             # Combine multiple chunks
             print("Combining audio chunks...")
             combined = self._combine_audio(all_audio)
-            print(f"Combined audio size: {len(combined)} bytes")
+            print("✓ Audio chunks combined")
             return combined
             
         except Exception as e:
