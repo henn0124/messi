@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     TEMP_DIR: Path = BASE_DIR / "temp"
     LOG_DIR: Path = BASE_DIR / "logs"
     
+    # Add default for wake word model path
+    WAKE_WORD_MODEL_PATH: Path = MODELS_DIR / "hey-messy_en_raspberry-pi_v3_0_0.ppn"
+    
     # Sensitive Settings (from .env)
     OPENAI_API_KEY: str
     PICOVOICE_ACCESS_KEY: str
@@ -40,7 +43,6 @@ class Settings(BaseSettings):
     
     # Wake Word Settings (with defaults)
     WAKE_WORD: str = "hey messy"
-    WAKE_WORD_MODEL_PATH: Path = None  # Will be set in __init__
     WAKE_WORD_THRESHOLD: float = 0.75
     WAKE_WORD_MIN_VOLUME: int = 100
     WAKE_WORD_MAX_VOLUME: int = 385
@@ -61,6 +63,13 @@ class Settings(BaseSettings):
         extra = "allow"
 
     def __init__(self, **kwargs):
+        # Add debug prints before super init
+        print(f"\nDebug - Config Paths:")
+        print(f"BASE_DIR: {Path('/home/pi/messi')}")
+        print(f"MODELS_DIR: {Path('/home/pi/messi/models')}")
+        print(f"Expected Wake Word Model: {Path('/home/pi/messi/models/hey-messy_en_raspberry-pi_v3_0_0.ppn')}")
+        
+        # Now do super init
         super().__init__(**kwargs)
         
         # Load YAML config once
@@ -74,6 +83,10 @@ class Settings(BaseSettings):
         
         # Set derived paths
         self.WAKE_WORD_MODEL_PATH = self.MODELS_DIR / config.get('wake_word', {}).get('model_name', 'hey-messy_en_raspberry-pi_v3_0_0.ppn')
+        
+        # Add post-init debug prints
+        print(f"Final Wake Word Model Path: {self.WAKE_WORD_MODEL_PATH}")
+        print(f"Model exists: {self.WAKE_WORD_MODEL_PATH.exists()}")
 
     def _load_yaml_config(self) -> dict:
         """Load configuration from YAML file"""

@@ -12,41 +12,62 @@ models:
 audio:
   input:
     device_index: 1
-    device_name: "Maono Elf"
-    native_rate: 44100
-    processing_rate: 16000
-    channels: 1
-    chunk_size: 1024
-    buffer_size: 8192
-    pre_emphasis: 0.97
-    silence_threshold: 90
+    device_name: "TONOR TM20 Audio Device"
+    native_rate: 44100          # Native sample rate of microphone
+    processing_rate: 16000      # Required rate for Whisper/Porcupine
+    channels: 1                 # Mono audio input
+    chunk_size: 1024           # Size of audio chunks to process
+    buffer_size: 8192          # Audio buffer size
+    pre_emphasis: 0.5         # High-frequency boost filter
+                              # Valid range: 0.0 to 1.0
+                              # Common values:
+                              # 0.0  = No emphasis (flat response)
+                              # 0.5  = Moderate emphasis (good with DSP mics)
+                              # 0.95 = Standard speech emphasis
+                              # 0.97 = Traditional speech recognition
+                              # > 0.98 = May cause distortion
+                              # Note: With TONOR TM20's DSP, use 0.5
+    silence_threshold: 550     # Level below which is considered silence
+                              # Range: 0-32767 (16-bit audio RMS values)
+                              # Typical values:
+                              # < 500: Very quiet/silence
+                              # 500-2000: Normal speech
+                              # > 3000: Loud speech/noise
   
   output:
-    device_index: 0
-    device_name: "bcm2835 Headphones"
-    rate: 24000
-    volume: 1.0
-    chunk_size: 2048
+    device_index: 2            # USB speaker device index
+    device_name: "USB2.0 Device: Audio"
+    rate: 48000               # Output sample rate
+    volume: 1.0               # Output volume multiplier
+    chunk_size: 2048          # Output buffer size
 
 # Wake Word Settings
 wake_word:
   name: "hey messy"
   model_name: "hey-messy_en_raspberry-pi_v3_0_0.ppn"
-  threshold: 0.75
-  min_volume: 100
-  max_volume: 4500
-  detection_window: 2.0
-  consecutive_frames: 1
-  retry_count: 3
+  threshold: 0.85              # Picovoice recommended default
+                             # Range: 0.0-1.0
+                             # 0.0 = Least sensitive (fewer detections)
+                             # 0.5 = Default balance
+                             # 1.0 = Most sensitive (more detections)
+  min_volume: 600            # Minimum volume to trigger detection
+                            # Range: 0-32767 (16-bit audio RMS values)
+                            # Set above ambient noise (~1.5x ambient)
+  max_volume: 2000          # Maximum volume to consider
+                           # Range: 0-32767 (16-bit audio RMS values)
+                           # Set below clipping (~2x normal speech)
+  detection_window: 2.0      # Time window to detect wake word (seconds)
+  consecutive_frames: 1      # Required consecutive detections
+  retry_count: 3            # Number of retries if detection fails
 
 # Command Settings
 command:
-  min_duration: 0.5
-  max_duration: 10.0
-  min_volume: 90
-  silence_timeout: 0.5
-  pre_buffer: 0.1
-  max_silence_chunks: 20
+  min_duration: 0.5          # Minimum command duration (seconds)
+  max_duration: 10.0         # Maximum command duration (seconds)
+  min_volume: 90            # Minimum volume for command detection
+  silence_timeout: 0.5      # Stop recording after silence duration
+  pre_buffer: 0.1           # Audio to keep before command starts
+  max_silence_chunks: 20    # Maximum silent chunks before stopping
 
 # Logging Settings
 logging:
@@ -54,3 +75,15 @@ logging:
   file_rotation: "1 MB"
   backup_count: 5
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Notes:
+# - All volume levels use RMS values from 16-bit audio (0-32767)
+# - Typical ranges:
+#   - Ambient noise: 200-800
+#   - Normal speech: 500-2000
+#   - Loud speech: 2000-4000
+#   - Very loud/clipping: >4000
+# - Calibrated using TONOR TM20 microphone with onboard DSP
+# - Values may need adjustment if mic DSP behavior changes
+# - Consider recalibrating if mic settings are modified
+# - Monitor for over-filtering if both DSP and our filters are active

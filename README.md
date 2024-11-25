@@ -69,3 +69,51 @@ An AI-powered storytelling assistant designed for children, running on Raspberry
 ## Installation
 
 1. Clone the repository:
+   ```bash
+   git clone https://github.com/yourusername/messi.git
+   cd messi
+   ```
+
+2. Create and activate a virtual environment:
+   ```bash
+   # Create virtual environment
+   python -m venv venv
+
+   # Activate virtual environment
+   source venv/bin/activate
+
+   # Verify correct python/pip from venv
+   which python
+   which pip
+   ```
+
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. Configure environment:
+   - Copy `.env.example` to `.env`
+   - Add your API keys:
+     - OPENAI_API_KEY
+     - PICOVOICE_ACCESS_KEY
+
+5. Run the application:
+   ```bash
+   python src/main.py
+   ```
+
+### Virtual Environment Management
+
+To restart the virtual environment:
+
+bash
+Deactivate current venv
+deactivate
+Reactivate venv
+source venv/bin/activate
+Verify venv is active
+which python # Should show path in /venv/
+which pip # Should show path in /venv/
+Reinstall requirements if needed
+pip install -r requirements.txt

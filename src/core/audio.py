@@ -89,37 +89,43 @@ class AudioInterface:
             raise
 
     async def initialize(self):
-        """Initialize audio with proper configuration"""
+        """Initialize audio with better error handling"""
         try:
-            # Get device info
-            input_device_info = self.p.get_device_info_by_index(
-                self.settings.AUDIO_INPUT_DEVICE_INDEX
-            )
+            print("\nInitializing PyAudio...")
+            self.p = pyaudio.PyAudio()
             
-            # Calculate frame parameters
-            self.input_sample_rate = int(input_device_info['defaultSampleRate'])
-            self.frame_length = self.porcupine.frame_length
-            self.samples_per_frame = int(self.input_sample_rate / 16000 * self.frame_length)
-            
-            print(f"\nAudio Configuration:")
-            print(f"Sample Rate: {self.input_sample_rate}Hz")
-            print(f"Frame Length: {self.frame_length}")
-            print(f"Samples per Frame: {self.samples_per_frame}")
+            # List available devices
+            print("\nAvailable Audio Devices:")
+            for i in range(self.p.get_device_count()):
+                dev = self.p.get_device_info_by_index(i)
+                print(f"\nDevice {i}:")
+                print(f"    Name: {dev['name']}")
+                print(f"    Max Input Channels: {dev['maxInputChannels']}")
+                print(f"    Max Output Channels: {dev['maxOutputChannels']}")
+                print(f"    Default Sample Rate: {dev['defaultSampleRate']}")
             
             # Initialize input stream
+            print("\nInitializing input stream...")
             self.stream = self.p.open(
                 format=pyaudio.paInt16,
                 channels=1,
-                rate=self.input_sample_rate,
+                rate=44100,
                 input=True,
-                frames_per_buffer=self.samples_per_frame,
-                input_device_index=self.settings.AUDIO_INPUT_DEVICE_INDEX
+                input_device_index=1,  # TONOR TM20
+                frames_per_buffer=1024
             )
             
+            if not self.stream.is_active():
+                print("❌ Failed to activate audio stream")
+                return False
+                
+            print("✓ Audio initialized successfully")
             return True
             
         except Exception as e:
             print(f"Error initializing audio: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     async def start_wake_word_detection(self, callback):
@@ -348,3 +354,72 @@ class AudioInterface:
             self.stream.close()
         if self.executor:
             self.executor.shutdown()
+
+    async def play_audio_chunk(self, audio_data: bytes):
+        """Play WAV audio data with detailed error handling"""
+        try:
+            if not audio_data:
+                print("No audio data received")
+                return
+                
+            print(f"\n▶ Playing WAV audio ({len(audio_data)/1024:.1f}KB)")
+            
+            # Initialize output stream if needed
+            if not self.output_stream:
+                print("Initializing output stream...")
+                self.output_stream = self.p.open(
+                    format=pyaudio.paInt16,
+                    channels=1,
+                    rate=24000,  # TTS output rate
+                    output=True,
+                    output_device_index=self.settings.AUDIO_OUTPUT_DEVICE_INDEX,
+                    frames_per_buffer=2048
+                )
+            
+            # Read WAV data
+            wav_buffer = io.BytesIO(audio_data)
+            with wave.open(wav_buffer, 'rb') as wav:
+                print(f"\nWAV Format:")
+                print(f"Channels: {wav.getnchannels()}")
+                print(f"Sample Width: {wav.getsampwidth()} bytes")
+                print(f"Frame Rate: {wav.getframerate()} Hz")
+                print(f"Frames: {wav.getnframes()}")
+                
+                # Reconfigure output stream if needed
+                if (wav.getframerate() != self.output_stream._rate or 
+                    wav.getnchannels() != self.output_stream._channels):
+                    print("Reconfiguring output stream to match WAV format...")
+                    self.output_stream.stop_stream()
+                    self.output_stream.close()
+                    self.output_stream = self.p.open(
+                        format=self.p.get_format_from_width(wav.getsampwidth()),
+                        channels=wav.getnchannels(),
+                        rate=wav.getframerate(),
+                        output=True,
+                        output_device_index=self.settings.AUDIO_OUTPUT_DEVICE_INDEX,
+                        frames_per_buffer=2048
+                    )
+                
+                # Play audio in chunks
+                print("\nPlaying audio...")
+                chunk_size = 2048
+                data = wav.readframes(chunk_size)
+                while data and not self.interrupt_event.is_set():
+                    self.output_stream.write(data)
+                    data = wav.readframes(chunk_size)
+                
+                print("✓ Playback complete")
+                
+        except Exception as e:
+            print(f"Error during playback: {e}")
+            import traceback
+            traceback.print_exc()
+            
+            # Try to recover stream
+            try:
+                if self.output_stream:
+                    self.output_stream.stop_stream()
+                    self.output_stream.close()
+                self.output_stream = None
+            except:
+                pass

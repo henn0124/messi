@@ -1,0 +1,10 @@
+=== Microphone Calibration Results ===
+Date: 20241125_115942
+
+Ambient Noise Level: 1004
+Average Speech Level: 1610
+
+Recommended Settings:
+WAKE_WORD_MIN_VOLUME = 1506
+AUDIO_SILENCE_THRESHOLD = 1205
+WAKE_WORD_MAX_VOLUME = 2415

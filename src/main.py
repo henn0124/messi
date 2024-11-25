@@ -91,10 +91,26 @@ class MessiAssistant:
             print("\nStarting Messi Assistant...")
             self.running = True
             
-            # Initialize audio
+            # Initialize audio with detailed logging
+            print("\nInitializing audio interface...")
+            print("1. Loading audio config...")
+            audio_config = self.settings._load_yaml_config().get('audio', {})
+            print(f"Audio config: {audio_config}")
+            
+            print("\n2. Setting up audio stream...")
             await self.audio.initialize()
             
+            if not self.audio.stream:
+                print("❌ Failed to initialize audio stream!")
+                return
+            
+            print("✓ Audio stream initialized")
+            print(f"Device: {self.audio.stream._device_info['name']}")
+            print(f"Rate: {self.audio.stream._rate}Hz")
+            print(f"Channels: {self.audio.stream._channels}")
+            
             # Start wake word detection with callback
+            print("\n3. Starting wake word detection...")
             await self.audio.start_wake_word_detection(self.on_wake_word)
             
             print("\nListening for wake word...")
