@@ -39,22 +39,22 @@ class TextToSpeech:
     async def synthesize(self, text: str) -> Optional[bytes]:
         """Synthesize text to speech with optimized chunking"""
         try:
-            # Split text into chunks
-            chunks = self._chunk_text(text)
-            chunk_count = len(chunks)
-            print(f"\nProcessing {chunk_count} chunk{'s' if chunk_count > 1 else ''}")
-            
-            # For single short chunk, process directly
-            if chunk_count == 1 and len(chunks[0]) < 500:
+            # Quick path for short text
+            if len(text) < 1000:
                 response = await self.client.audio.speech.create(
                     model=self.settings.OPENAI_TTS_MODEL,
                     voice=self.settings.OPENAI_TTS_VOICE,
-                    input=chunks[0],
+                    input=text,
                     response_format="wav"
                 )
                 return response
             
-            # For multiple chunks, process in parallel
+            # Standard chunking for longer text
+            chunks = self._chunk_text(text)
+            chunk_count = len(chunks)
+            print(f"\nProcessing {chunk_count} chunk{'s' if chunk_count > 1 else ''}")
+            
+            # Process chunks concurrently
             async def process_chunk(chunk: str, index: int):
                 try:
                     print(f"Processing chunk {index + 1}/{chunk_count}...")
@@ -68,7 +68,7 @@ class TextToSpeech:
                     print(f"Error in chunk {index + 1}: {e}")
                     return None
             
-            # Process chunks concurrently
+            # Process chunks in parallel
             tasks = [process_chunk(chunk, i) for i, chunk in enumerate(chunks)]
             responses = await asyncio.gather(*tasks)
             
@@ -79,11 +79,11 @@ class TextToSpeech:
                 print("No audio generated")
                 return None
             
-            # If only one chunk succeeded, return it
+            # If only one chunk, return directly
             if len(all_audio) == 1:
                 return all_audio[0]
             
-            # Combine chunks
+            # Combine chunks if needed
             print("Combining audio...")
             return await self._combine_audio(all_audio)
             
@@ -92,77 +92,85 @@ class TextToSpeech:
             return None
 
     def _chunk_text(self, text: str) -> List[str]:
-        """Split text into optimal chunks for TTS"""
-        # Don't chunk short text
-        if len(text) < 500:  # Increased from 250
+        """Split text into optimal chunks for TTS with smart thresholds"""
+        # Don't chunk short text (increased threshold)
+        if len(text) < 1000:  # Increased from 500
             return [text]
+        
+        # For medium text, use larger chunks
+        if len(text) < 2000:
+            sentences = text.split('. ')
+            chunks = []
+            current_chunk = []
+            current_length = 0
             
-        # For longer text, split on natural breaks
-        chunks = []
-        current_chunk = []
-        current_length = 0
-        
-        # Split on sentence endings and other natural breaks
-        sentences = [s.strip() for s in text.replace('? ', '?|').replace('! ', '!|').replace('. ', '.|').split('|')]
-        
-        for sentence in sentences:
-            sentence_length = len(sentence)
+            for sentence in sentences:
+                if current_length + len(sentence) < 1500:
+                    current_chunk.append(sentence)
+                    current_length += len(sentence)
+                else:
+                    chunks.append('. '.join(current_chunk) + '.')
+                    current_chunk = [sentence]
+                    current_length = len(sentence)
             
-            # If sentence alone is too long, split on commas
-            if sentence_length > 500:
-                comma_parts = sentence.split(', ')
-                for part in comma_parts:
-                    if current_length + len(part) < 500:
-                        current_chunk.append(part)
-                        current_length += len(part)
-                    else:
-                        chunks.append(', '.join(current_chunk))
-                        current_chunk = [part]
-                        current_length = len(part)
-            
-            # Normal sentence handling
-            elif current_length + sentence_length < 500:
-                current_chunk.append(sentence)
-                current_length += sentence_length
-            else:
-                chunks.append('. '.join(current_chunk) + '.')
-                current_chunk = [sentence]
-                current_length = sentence_length
-        
-        # Add remaining chunk
-        if current_chunk:
-            chunks.append('. '.join(current_chunk))
-        
-        return chunks
+            if current_chunk:
+                chunks.append('. '.join(current_chunk))
+            return chunks
+
+        # For long text, use more aggressive chunking
+        return self._chunk_long_text(text)
 
     async def _combine_audio(self, audio_chunks: List[bytes]) -> bytes:
         """Combine WAV audio chunks"""
-        # Create WAV in memory
-        output = io.BytesIO()
-        
         try:
-            # Get parameters from first chunk
+            # For single chunk, return directly
+            if len(audio_chunks) == 1:
+                chunk = audio_chunks[0]
+                if hasattr(chunk, 'aread'):
+                    return await chunk.aread()
+                elif hasattr(chunk, 'read'):
+                    return chunk.read()
+                return chunk
+            
+            # Create output buffer
+            output = io.BytesIO()
+            
+            # Get first chunk data
             first_chunk = audio_chunks[0]
             if hasattr(first_chunk, 'aread'):
-                first_chunk = await first_chunk.aread()
+                first_data = await first_chunk.aread()
             elif hasattr(first_chunk, 'read'):
-                first_chunk = first_chunk.read()
-                
-            with wave.open(io.BytesIO(first_chunk), 'rb') as first_wav:
-                params = first_wav.getparams()
+                first_data = first_chunk.read()
+            else:
+                first_data = first_chunk
+            
+            # Get WAV parameters from first chunk
+            with wave.open(io.BytesIO(first_data), 'rb') as wf:
+                channels = wf.getnchannels()
+                sampwidth = wf.getsampwidth()
+                framerate = wf.getframerate()
                 
                 # Create output WAV
                 with wave.open(output, 'wb') as wav_out:
-                    wav_out.setparams(params)
+                    wav_out.setnchannels(channels)
+                    wav_out.setsampwidth(sampwidth)
+                    wav_out.setframerate(framerate)
                     
-                    # Write all chunks
-                    for chunk in audio_chunks:
+                    # Write first chunk frames
+                    wav_out.writeframes(wf.readframes(wf.getnframes()))
+                    
+                    # Write remaining chunks
+                    for chunk in audio_chunks[1:]:
+                        # Get chunk data
                         if hasattr(chunk, 'aread'):
-                            chunk = await chunk.aread()
+                            chunk_data = await chunk.aread()
                         elif hasattr(chunk, 'read'):
-                            chunk = chunk.read()
-                            
-                        with wave.open(io.BytesIO(chunk), 'rb') as wav_in:
+                            chunk_data = chunk.read()
+                        else:
+                            chunk_data = chunk
+                        
+                        # Extract and write frames
+                        with wave.open(io.BytesIO(chunk_data), 'rb') as wav_in:
                             wav_out.writeframes(wav_in.readframes(wav_in.getnframes()))
             
             return output.getvalue()
@@ -170,4 +178,11 @@ class TextToSpeech:
         except Exception as e:
             print(f"Error combining audio: {e}")
             # Return first chunk if combination fails
-            return audio_chunks[0] if audio_chunks else None
+            if audio_chunks:
+                chunk = audio_chunks[0]
+                if hasattr(chunk, 'aread'):
+                    return await chunk.aread()
+                elif hasattr(chunk, 'read'):
+                    return chunk.read()
+                return chunk
+            return None

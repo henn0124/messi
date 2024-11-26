@@ -1,29 +1,38 @@
 learning:
-  metrics:
-    avg_conversation_length: 0
-    failed_exchanges: 0
-    successful_exchanges: 0
-    topic_success_rates: {}
-  optimizations:
-    context_weights:
+  patterns: {}
+  success_rates: {}
+  weights:
+    context:
       current_entities: 0.3
       previous_context: 0.4
+      topics: {}
+      transitions:
+        food:
+          entities:
+          - restaurant
+          - food
+          - meal
+          related:
+          - cuisine
+          - restaurants
+          - chefs
+          topics:
+          - cooking
+          - dining
+          - recipes
+        france:
+          entities:
+          - france
+          - paris
+          - french
+          related:
+          - french_food
+          - french_culture
+          - paris
+          topics:
+          - cuisine
+          - culture
+          - travel
       user_engagement: 0.3
-    transition_rules:
-      cooldown_period: 60
-      max_transitions: 3
-      min_confidence: 0.6
-  parameters:
-    decay_factor: 0.95
-    learning_rate: 0.1
-    min_samples: 10
-    update_frequency: 3600
-  patterns:
-    context_transitions: {}
-    engagement_patterns: {}
-    topic_relationships: {}
-  thresholds:
-    context_switch_threshold: 0.7
-    engagement_threshold: 0.6
-    max_silence: 0.0
-    min_response_length: 2
+    last_updated: '2024-11-25T21:52:59.169350'
+    patterns: {}

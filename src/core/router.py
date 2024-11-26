@@ -3,6 +3,10 @@ from openai import AsyncOpenAI
 from .config import Settings
 from .logger import ConversationLogger
 from .context_manager import ContextManager
+from .learning_manager import LearningManager
+from .intent_learner import IntentLearner
+import yaml
+from pathlib import Path
 
 class AssistantRouter:
     """
@@ -38,14 +42,28 @@ class AssistantRouter:
     def __init__(self):
         self.settings = Settings()
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
-        self.skills = {}  # Will be populated with available skills
-        self.context_manager = ContextManager()
+        
+        # Load skills config
+        self.skills_config = self._load_skills_config()
+        
+        # Initialize learning components
+        self.learning_manager = LearningManager() if self.settings.learning.enabled else None
+        self.intent_learner = IntentLearner() if self.settings.learning.enabled else None
+        self.context_manager = ContextManager(self.learning_manager)
         
         # Load available skills
         self._load_skills()
-
-        # Set up conversation logging
         self.logger = ConversationLogger()
+
+    def _load_skills_config(self) -> Dict:
+        """Load skills configuration"""
+        try:
+            config_path = Path("config/skills_config.yaml")
+            with open(config_path) as f:
+                return yaml.safe_load(f)
+        except Exception as e:
+            print(f"Error loading skills config: {e}")
+            return {}
 
     def _load_skills(self):
         """Load available skills from skills directory"""
@@ -63,31 +81,66 @@ class AssistantRouter:
             print(f"Error loading skills: {e}")
 
     def _score_intents(self, text: str, context_info: Dict = None) -> Dict[str, float]:
-        """Score intents with context awareness"""
-        scores = {
-            "story": 0.0,
-            "education": 0.0,
-            "tutor": 0.0,
-            "timer": 0.0,
-            "conversation": 0.0
-        }
+        """Score intents using skills config"""
+        # Get base scores
+        scores = self.skills_config["intents"]["base_scores"].copy()
+        text_lower = text.lower()
         
-        # Context bonus
+        # Apply pattern matching with config weights
+        for intent, config in self.skills_config["intents"]["patterns"].items():
+            if any(pattern in text_lower for pattern in config["keywords"]):
+                scores[intent] += self.skills_config["intents"]["weights"][intent]
+        
+        # Apply context bonus if matching current context
         if context_info and context_info.get("current"):
-            scores[context_info["current"]] += 1.0
+            context_bonus = self.skills_config["intents"]["thresholds"]["context_bonus"]
+            scores[context_info["current"]] += context_bonus
         
-        # Education keywords
-        if any(word in text.lower() for word in ["what", "why", "how", "when", "where", "explain", "tell me about", "learn"]):
-            scores["education"] += 1.5
+        # Log scoring details
+        print("\n=== Intent Detection ===")
+        print(f"Input: '{text}'")
+        print("Intent Scores:")
+        for intent, score in scores.items():
+            print(f"  {intent:12s}: {score:.2f}")
+        
+        # Record for learning
+        if self.intent_learner:
+            self.intent_learner.learn_from_interaction(text, max(scores.items(), key=lambda x: x[1])[0], True)
+        
+        # Get highest scoring intent
+        max_score = max(scores.values())
+        min_confidence = self.skills_config["intents"]["thresholds"]["min_confidence"]
+        
+        if max_score <= min_confidence:  # If no strong signal
+            conversation_patterns = self.skills_config["intents"]["patterns"]["conversation"]["keywords"]
+            if any(pattern in text_lower for pattern in conversation_patterns):
+                print("Defaulting to conversation for chat-like input")
+                return "conversation"
+            print("No clear intent detected, defaulting to education")
+            return "education"
             
-        # Story keywords
-        if any(word in text.lower() for word in ["story", "tell", "once upon", "happened"]):
-            scores["story"] += 1.5
+        # Get all intents with the max score
+        top_intents = [
+            intent for intent, score in scores.items() 
+            if score == max_score
+        ]
+        
+        # If multiple top intents, prefer conversation for chat-like input
+        if len(top_intents) > 1:
+            if "conversation" in top_intents and any(pattern in text_lower for pattern in conversation_patterns):
+                selected = "conversation"
+            elif "education" in top_intents:
+                selected = "education"
+            else:
+                selected = top_intents[0]
+        else:
+            selected = top_intents[0]
             
-        return scores
+        print(f"Selected Intent: {selected}")
+        return selected
 
     async def route_request(self, text: str) -> Dict:
-        """Route request to appropriate skill with better error handling"""
+        """Route request with learning integration"""
         try:
             # Get current context
             current_context = await self.context_manager.get_context("current")
@@ -95,7 +148,7 @@ class AssistantRouter:
             # Extract entities with context
             entities = await self._extract_entities(text)
             
-            # Score intents with context
+            # Score intents with learning
             intent_scores = self._score_intents(text, current_context)
             intent_name = max(intent_scores.items(), key=lambda x: x[1])[0]
             
@@ -108,8 +161,22 @@ class AssistantRouter:
             # Log the flow
             self.logger.log_intent_detection(text, intent_scores, skill_name)
             
+            # Get response from skill
             if skill_name in self.skills:
-                return await self.skills[skill_name].handle(text, context_info)
+                response = await self.skills[skill_name].handle(text, context_info)
+                
+                # Record successful interaction for learning
+                if self.learning_manager:
+                    await self.learning_manager.record_exchange({
+                        "text": text,
+                        "intent": intent_name,
+                        "skill": skill_name,
+                        "context": context_info,
+                        "success": True,
+                        "entities": entities
+                    })
+                    
+                return response
             else:
                 # Generate contextual response
                 response = await self._generate_contextual_response(text)

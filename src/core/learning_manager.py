@@ -33,6 +33,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import yaml
 from .config import Settings
+import aiofiles
 
 if TYPE_CHECKING:
     from .context_manager import ContextManager
@@ -43,12 +44,23 @@ class LearningManager:
         self.settings = Settings()
         self.learning_enabled = self.settings.learning.enabled
         
+        # Initialize components
+        self.context_manager = None  # Will be set by MessiAssistant
+        
         # Initialize patterns dict
         self.patterns = {
             "context_transitions": {},
             "topic_relationships": {},
             "engagement_patterns": {},
             "conversation_flows": {}
+        }
+        
+        # Initialize metrics
+        self.metrics = {
+            "successful_exchanges": 0,
+            "failed_exchanges": 0,
+            "avg_conversation_length": 0,
+            "topic_success_rates": {}
         }
         
         if self.learning_enabled:
@@ -62,9 +74,26 @@ class LearningManager:
             
             # Initialize data
             self._initialize_learning_data()
+            
+            # Update metrics from learning data
+            if hasattr(self, 'learning_data'):
+                self.metrics.update(self.learning_data.get("metrics", {}))
+            
             print(f"Learning system initialized with data at: {self.learning_file}")
         else:
             print("Learning system disabled via config")
+        
+        # Add queue for deferred learning tasks
+        self.learning_queue = asyncio.Queue()
+        self.is_processing = False
+        self.in_conversation = False  # Track conversation state
+        
+        # Track intent learning
+        self.intent_learning = {
+            "patterns": {},
+            "success_rates": {},
+            "transitions": {}
+        }
     
     async def initialize(self):
         """Initialize async components"""
@@ -74,10 +103,46 @@ class LearningManager:
             print("Learning system async components initialized")
     
     async def record_exchange(self, exchange_data: Dict):
-        """Record exchange with toggle check"""
+        """Queue exchange data for processing during downtime"""
         if not self.learning_enabled:
             return
             
+        # Just queue the data, don't process now
+        await self.learning_queue.put({
+            "type": "exchange",
+            "data": exchange_data,
+            "timestamp": datetime.now().isoformat()
+        })
+        
+    async def process_learning_queue(self):
+        """Process queued learning tasks during system downtime"""
+        # Don't process if conversation is active
+        if self.in_conversation:
+            return
+            
+        self.is_processing = True
+        try:
+            while not self.learning_queue.empty():
+                # Check conversation state before each task
+                if self.in_conversation:
+                    print("Conversation started - pausing learning queue")
+                    break
+                    
+                task = await self.learning_queue.get()
+                
+                if task["type"] == "exchange":
+                    await self._process_exchange(task["data"])
+                
+                self.learning_queue.task_done()
+                await asyncio.sleep(0.1)  # Allow other tasks to run
+                
+        except Exception as e:
+            print(f"Error processing learning queue: {e}")
+        finally:
+            self.is_processing = False
+            
+    async def _process_exchange(self, exchange_data: Dict):
+        """Process a single exchange (during downtime)"""
         try:
             # Extract key information
             context = exchange_data.get("context")
@@ -86,23 +151,20 @@ class LearningManager:
             response = exchange_data.get("response")
             engagement = exchange_data.get("engagement_score", 0)
             
-            # Update transition patterns
+            # Update patterns
             if previous_context and context != previous_context:
                 self._update_transition_pattern(previous_context, context, engagement)
             
-            # Update topic relationships
             topics = self._extract_topics(user_text)
             self._update_topic_relationships(topics, engagement)
-            
-            # Update engagement patterns
             self._update_engagement_patterns(exchange_data)
             
-            # Save if significant learning occurred
+            # Save if needed
             if self._should_save_learning():
                 await self._save_learning_data()
                 
         except Exception as e:
-            print(f"Error recording exchange: {e}")
+            print(f"Error processing exchange: {e}")
     
     async def get_learned_patterns(self, context: str) -> Dict:
         """Get learned patterns for a specific context"""
@@ -243,55 +305,68 @@ class LearningManager:
             f.write("\n")
     
     async def _save_learning_data(self):
-        """Save learning data to both JSON and YAML"""
+        """Save learning data including weights to disk"""
         try:
-            # Save detailed learning data to JSON
-            self.learning_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.learning_file, 'w') as f:
-                json.dump({
-                    "patterns": self.patterns,
-                    "metrics": self.metrics,
-                    "timestamp": datetime.now().isoformat()
-                }, f, indent=2)
+            # Update learning data with current weights and patterns
+            self.learning_data.update({
+                "last_updated": datetime.now().isoformat(),
+                "intent_learning": {
+                    "patterns": self.intent_learning["patterns"],
+                    "success_rates": self.intent_learning["success_rates"],
+                    "transitions": self.intent_learning["transitions"]
+                },
+                "weights": {
+                    "patterns": self.get_pattern_weights(),
+                    "context": self.context_manager.get_weights() if self.context_manager else {},
+                    "last_updated": datetime.now().isoformat()
+                }
+            })
             
-            # Update dynamic config YAML
-            config = {
+            # Save to JSON file
+            async with aiofiles.open(self.learning_file, 'w') as f:
+                await f.write(json.dumps(self.learning_data, indent=2))
+            
+            # Also update dynamic config
+            config_data = {
                 "learning": {
-                    "patterns": {
-                        "context_transitions": self.patterns["context_transitions"],
-                        "topic_relationships": self.patterns["topic_relationships"],
-                        "engagement_patterns": self.patterns["engagement_patterns"]
-                    },
-                    "metrics": self.metrics,
-                    "thresholds": self._calculate_thresholds(),
-                    "optimizations": self._get_optimizations(),
-                    "parameters": self._get_learning_parameters()
+                    "weights": self.learning_data["weights"],
+                    "patterns": self.intent_learning["patterns"],
+                    "success_rates": self.intent_learning["success_rates"]
                 }
             }
             
-            self.config_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.config_file, 'w') as f:
-                yaml.dump(config, f, default_flow_style=False)
-            
-            # Log the update
-            self._log_updates("config_update", {
-                "patterns_updated": len(self.patterns),
-                "metrics_updated": len(self.metrics),
-                "timestamp": datetime.now().isoformat()
-            })
+            async with aiofiles.open(self.config_file, 'w') as f:
+                await f.write(yaml.dump(config_data, default_flow_style=False))
+                
+            print(f"Learning data saved - patterns: {len(self.intent_learning['patterns'])} success_rates: {len(self.intent_learning['success_rates'])}")
             
         except Exception as e:
             print(f"Error saving learning data: {e}")
-            
+    
     def _calculate_thresholds(self) -> Dict:
         """Calculate adaptive thresholds based on learning"""
-        return {
-            "min_response_length": max(2, int(self.metrics["avg_conversation_length"] * 0.3)),
-            "max_silence": min(10.0, self.metrics["avg_conversation_length"] * 0.2),
-            "context_switch_threshold": 0.7,  # Adjusted based on success rate
-            "engagement_threshold": 0.6
-        }
-        
+        try:
+            # Get metrics from learning data
+            exchanges = self.learning_data["exchanges"]
+            avg_length = self.learning_data.get("learning_progress", {}).get("avg_conversation_length", 0)
+            
+            return {
+                "min_response_length": max(2, int(avg_length * 0.3)),
+                "max_silence": min(10.0, avg_length * 0.2),
+                "context_switch_threshold": 0.7,  # Adjusted based on success rate
+                "engagement_threshold": 0.6
+            }
+            
+        except Exception as e:
+            print(f"Error calculating thresholds: {e}")
+            # Return defaults
+            return {
+                "min_response_length": 2,
+                "max_silence": 5.0,
+                "context_switch_threshold": 0.7,
+                "engagement_threshold": 0.6
+            }
+    
     def _get_optimizations(self) -> Dict:
         """Get current optimization settings"""
         return {
@@ -341,35 +416,95 @@ class LearningManager:
     def _initialize_learning_data(self):
         """Initialize or load learning data"""
         try:
-            # Initialize metrics
-            self.metrics = {
-                "successful_exchanges": 0,
-                "failed_exchanges": 0,
-                "avg_conversation_length": 0,
-                "topic_success_rates": {}
-            }
-            
             # Try to load existing data
             if self.learning_file.exists():
-                try:
-                    with open(self.learning_file, 'r') as f:
-                        data = json.load(f)
-                        self.learning_data = data
-                        # Update metrics from loaded data
-                        self.metrics.update(data.get("metrics", {}))
-                except json.JSONDecodeError:
-                    print("Warning: Learning data file corrupted, creating new")
-                    self._create_initial_learning_data()
+                with open(self.learning_file, 'r') as f:
+                    saved_data = json.load(f)
+                    
+                    # Restore intent learning data
+                    if "intent_learning" in saved_data:
+                        self.intent_learning = saved_data["intent_learning"]
+                    
+                    # Restore weights
+                    if "weights" in saved_data:
+                        self.weights = saved_data["weights"]
+                        
+                    # Update learning data
+                    self.learning_data = saved_data
             else:
-                print("Creating new learning data file")
+                # Create new learning data structure
                 self._create_initial_learning_data()
                 
+            print(f"Loaded learning data with {len(self.intent_learning['patterns'])} patterns")
+            
         except Exception as e:
-            print(f"Error initializing learning data: {e}")
+            print(f"Error loading learning data: {e}")
             self._create_initial_learning_data()
     
     def _create_initial_learning_data(self):
-        """Create initial learning data structure"""
+        """Create initial learning data structure with all skills"""
+        try:
+            # Load skills config to get all patterns
+            with open("config/skills_config.yaml") as f:
+                skills_config = yaml.safe_load(f)
+            
+            # Initialize patterns for each skill
+            initial_patterns = {}
+            for intent, config in skills_config["intents"]["patterns"].items():
+                initial_patterns[intent] = {
+                    keyword: 0.5  # Start with neutral weight
+                    for keyword in config["keywords"]
+                }
+            
+            self.learning_data = {
+                "version": "1.0",
+                "last_updated": datetime.now().isoformat(),
+                "intent_learning": {
+                    "patterns": initial_patterns,
+                    "success_rates": {
+                        intent: {
+                            "successes": 0,
+                            "total": 0,
+                            "recent_success": 0.0
+                        }
+                        for intent in skills_config["intents"]["patterns"].keys()
+                    },
+                    "transitions": {
+                        source: {
+                            target: 0.5
+                            for target in transitions
+                        }
+                        for source, transitions in skills_config["intents"]["transitions"].items()
+                    }
+                },
+                "weights": {
+                    "patterns": {
+                        intent: skills_config["intents"]["weights"].get(intent, 0.5)
+                        for intent in skills_config["intents"]["patterns"].keys()
+                    },
+                    "context": {
+                        "previous_context": 0.4,
+                        "current_entities": 0.3,
+                        "user_engagement": 0.3
+                    },
+                    "last_updated": datetime.now().isoformat()
+                }
+            }
+            
+            # Save initial data
+            self.learning_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.learning_file, 'w') as f:
+                json.dump(self.learning_data, f, indent=2)
+                
+            print(f"Created new learning data with {len(initial_patterns)} skills")
+            
+        except Exception as e:
+            print(f"Error creating initial learning data: {e}")
+            # Create minimal structure if config load fails
+            self._create_minimal_learning_data()
+    
+    def _create_minimal_learning_data(self):
+        """Create minimal learning data structure"""
         self.learning_data = {
             "version": "1.0",
             "last_updated": datetime.now().isoformat(),
@@ -544,3 +679,92 @@ class LearningManager:
             
         except Exception as e:
             print(f"Error updating engagement patterns: {e}")
+    
+    def _should_save_learning(self) -> bool:
+        """Determine if learning data should be saved"""
+        try:
+            # Save if we have enough new data
+            min_samples = self.settings.learning.parameters["min_samples"]
+            total_exchanges = self.learning_data["exchanges"]["total"]
+            
+            # Save every min_samples exchanges
+            return total_exchanges % min_samples == 0
+            
+        except Exception as e:
+            print(f"Error checking save condition: {e}")
+            return False
+    
+    async def record_intent_learning(self, learning_data: Dict):
+        """Record intent learning data with dynamic weight adjustment"""
+        try:
+            intent = learning_data["intent"]
+            success = learning_data["success"]
+            
+            # Update patterns
+            if intent not in self.intent_learning["patterns"]:
+                self.intent_learning["patterns"][intent] = {}
+            
+            # Get learning parameters
+            learning_rate = self.settings.learning.parameters["learning_rate"]
+            decay_factor = self.settings.learning.parameters["decay_factor"]
+            
+            # Update pattern weights
+            patterns = learning_data["patterns"]
+            for pattern, weight in patterns["weights"].items():
+                if pattern not in self.intent_learning["patterns"][intent]:
+                    self.intent_learning["patterns"][intent][pattern] = weight
+                else:
+                    current_weight = self.intent_learning["patterns"][intent][pattern]
+                    
+                    # Apply decay to old weight
+                    current_weight *= decay_factor
+                    
+                    # Blend with new weight
+                    if success:
+                        # Increase influence of successful patterns
+                        new_weight = current_weight + (learning_rate * (weight - current_weight))
+                    else:
+                        # Decrease influence of failed patterns
+                        new_weight = current_weight - (learning_rate * current_weight)
+                    
+                    # Keep weights in valid range
+                    self.intent_learning["patterns"][intent][pattern] = max(0.1, min(1.0, new_weight))
+            
+            # Update success rates
+            if intent not in self.intent_learning["success_rates"]:
+                self.intent_learning["success_rates"][intent] = {
+                    "successes": 0,
+                    "total": 0,
+                    "recent_success": 0.0  # Track recent performance
+                }
+            
+            rates = self.intent_learning["success_rates"][intent]
+            rates["total"] += 1
+            if success:
+                rates["successes"] += 1
+                rates["recent_success"] = rates["recent_success"] * decay_factor + learning_rate
+            else:
+                rates["recent_success"] = rates["recent_success"] * decay_factor
+            
+            # Save if needed
+            if self._should_save_learning():
+                await self._save_learning_data()
+                
+        except Exception as e:
+            print(f"Error recording intent learning: {e}")
+    
+    def get_pattern_weights(self) -> Dict[str, float]:
+        """Get learned pattern weights"""
+        weights = {}
+        
+        for intent, data in self.intent_learning["patterns"].items():
+            if intent in self.intent_learning["success_rates"]:
+                rates = self.intent_learning["success_rates"][intent]
+                success_rate = rates["successes"] / rates["total"] if rates["total"] > 0 else 0.5
+                weights[intent] = 0.5 + (success_rate * 0.5)  # Scale from 0.5 to 1.0
+                
+        return weights
+    
+    def is_conversation_active(self) -> bool:
+        """Check if conversation is active"""
+        return self.in_conversation

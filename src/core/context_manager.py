@@ -108,8 +108,8 @@ class ContextManager:
             "conversation": self._handle_conversation_context
         }
         
-        # Add default weights
-        self.default_weights = {
+        # Add weights tracking
+        self.weights = {
             "previous_context": 0.4,
             "current_entities": 0.3,
             "user_engagement": 0.3
@@ -140,7 +140,7 @@ class ContextManager:
                 context_score = self._calculate_context_score(text, entities, weights)
             else:
                 # Use default weights
-                context_score = self._calculate_context_score(text, entities, self.default_weights)
+                context_score = self._calculate_context_score(text, entities, self.weights)
             
             # Use threshold for transitions
             if context_score > config["thresholds"]["context_switch_threshold"]:
@@ -420,6 +420,89 @@ class ContextManager:
             },
             "skill_specific": self._get_skill_context(self.current_context or "general")
         }
+
+    def get_weights(self) -> Dict[str, float]:
+        """Get current context weights"""
+        try:
+            # Return current weights with any learned adjustments
+            return {
+                "previous_context": self.weights["previous_context"],
+                "current_entities": self.weights["current_entities"],
+                "user_engagement": self.weights["user_engagement"],
+                "transitions": self._get_transition_weights(),
+                "topics": self._get_topic_weights()
+            }
+        except Exception as e:
+            print(f"Error getting context weights: {e}")
+            # Return default weights
+            return {
+                "previous_context": 0.4,
+                "current_entities": 0.3,
+                "user_engagement": 0.3,
+                "transitions": {},
+                "topics": {}
+            }
+            
+    def _get_transition_weights(self) -> Dict[str, float]:
+        """Get learned transition weights"""
+        weights = {}
+        if hasattr(self, 'context_transitions'):
+            for source, targets in self.context_transitions.items():
+                weights[source] = {
+                    target: weight 
+                    for target, weight in targets.items()
+                }
+        return weights
+        
+    def _get_topic_weights(self) -> Dict[str, float]:
+        """Get learned topic weights"""
+        weights = {}
+        if hasattr(self, 'topic_relationships'):
+            for topic, related in self.topic_relationships.items():
+                weights[topic] = {
+                    rel_topic: weight 
+                    for rel_topic, weight in related.items()
+                }
+        return weights
+        
+    def update_weights(self, new_weights: Dict[str, float]):
+        """Update context weights based on learning"""
+        try:
+            # Update base weights
+            for key in ["previous_context", "current_entities", "user_engagement"]:
+                if key in new_weights:
+                    self.weights[key] = new_weights[key]
+                    
+            # Update transition weights
+            if "transitions" in new_weights:
+                self._update_transition_weights(new_weights["transitions"])
+                
+            # Update topic weights
+            if "topics" in new_weights:
+                self._update_topic_weights(new_weights["topics"])
+                
+        except Exception as e:
+            print(f"Error updating context weights: {e}")
+            
+    def _update_transition_weights(self, transition_weights: Dict[str, Dict[str, float]]):
+        """Update transition weights"""
+        if not hasattr(self, 'context_transitions'):
+            self.context_transitions = {}
+            
+        for source, targets in transition_weights.items():
+            if source not in self.context_transitions:
+                self.context_transitions[source] = {}
+            self.context_transitions[source].update(targets)
+            
+    def _update_topic_weights(self, topic_weights: Dict[str, Dict[str, float]]):
+        """Update topic relationship weights"""
+        if not hasattr(self, 'topic_relationships'):
+            self.topic_relationships = {}
+            
+        for topic, related in topic_weights.items():
+            if topic not in self.topic_relationships:
+                self.topic_relationships[topic] = {}
+            self.topic_relationships[topic].update(related)
 
 class BaseContext:
     def __init__(self):

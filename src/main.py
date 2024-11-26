@@ -86,6 +86,11 @@ class MessiAssistant:
         # Initialize components
         self.learning_manager = LearningManager() if self.settings.learning.enabled else None
         self.context_manager = ContextManager(self.learning_manager)
+        
+        # Set context_manager reference in learning_manager
+        if self.learning_manager:
+            self.learning_manager.context_manager = self.context_manager
+            
         self.audio = AudioInterface()
         self.tts = TextToSpeech()
         self.speech = SpeechManager()
@@ -95,6 +100,11 @@ class MessiAssistant:
         
         # Initialize OpenAI client
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
+        
+        # Add conversation state tracking
+        self.in_conversation = False
+        self.conversation_start_time = None
+        self.last_interaction_time = None
 
     async def start(self):
         """Start the assistant"""
@@ -120,6 +130,12 @@ class MessiAssistant:
             
             # Keep running until stopped
             while self.running:
+                # Process learning queue during idle time
+                if (self.learning_manager and 
+                    not self.in_conversation and 
+                    not self.learning_manager.is_processing):
+                    await self.learning_manager.process_learning_queue()
+                
                 await asyncio.sleep(0.1)
                 
         except Exception as e:
@@ -131,11 +147,16 @@ class MessiAssistant:
     async def on_wake_word(self, audio_data: bytes):
         """Handle wake word detection with error handling"""
         try:
+            # Set conversation state
+            if self.learning_manager:
+                self.learning_manager.in_conversation = True
+            
             # Process speech to text
             text = await self.speech.process_audio(audio_data)
             
             if not text:
                 print("No speech detected")
+                self.in_conversation = False
                 return
                 
             print(f"\n✓ Recognized Text ({len(text)} chars):")
@@ -163,6 +184,8 @@ class MessiAssistant:
             if response and response.get("conversation_active") and response.get("auto_continue"):
                 print("\nConversation active, listening for follow-up...")
                 await self.listen_for_followup()
+            else:
+                self.in_conversation = False
             
         except Exception as e:
             print(f"Error processing command: {e}")
@@ -173,6 +196,11 @@ class MessiAssistant:
                 "context": "error",
                 "auto_continue": False
             })
+            self.in_conversation = False
+        finally:
+            # Reset conversation state
+            if self.learning_manager:
+                self.learning_manager.in_conversation = False
 
     async def listen_for_followup(self):
         """Listen for follow-up with better handling"""
