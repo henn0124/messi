@@ -1,0 +1,31 @@
+{
+    "version": "1.0",
+    "last_updated": "2024-01-25T14:32:15",
+    "exchanges": {
+        "total": 0,
+        "successful": 0,
+        "failed": 0,
+        "by_context": {}
+    },
+    "patterns": {
+        "context_transitions": {
+            "education": {
+                "story": 0.0,
+                "conversation": 0.0
+            }
+        },
+        "topic_relationships": {
+            "france": {
+                "food": 0.0,
+                "culture": 0.0
+            }
+        },
+        "engagement_patterns": {},
+        "conversation_flows": {}
+    },
+    "learning_progress": {
+        "context_accuracy": 0.0,
+        "engagement_improvement": 0.0,
+        "response_quality": 0.0
+    }
+} 

@@ -76,6 +76,19 @@ logging:
   backup_count: 5
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
+# Learning Settings
+learning:
+  enabled: true  # Toggle learning system on/off
+  parameters:
+    learning_rate: 0.1
+    decay_factor: 0.95
+    update_frequency: 3600
+    min_samples: 10
+  storage:
+    data_path: "cache/learning/learning.json"
+    config_path: "config/dynamic_config.yaml"
+    logs_path: "logs/learning_updates.log"
+
 # Notes:
 # - All volume levels use RMS values from 16-bit audio (0-32767)
 # - Typical ranges:

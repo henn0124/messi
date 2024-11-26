@@ -113,6 +113,15 @@ class ConversationManager:
             "topics": set(),                  # Topics discussed
             "exit_type": None                 # How did conversation end
         }
+        
+        # Conversation type handlers
+        self.conversation_types = {
+            "education": EducationalConversation,
+            "story": StoryConversation,
+            "general": GeneralConversation
+        }
+        
+        self.active_conversations = {}
     
     async def start_conversation(self):
         """Initialize a new conversation"""
@@ -218,3 +227,43 @@ class ConversationManager:
     def get_metrics(self) -> Dict:
         """Get conversation metrics"""
         return self.metrics 
+
+class BaseConversation:
+    """Base class for all conversation types"""
+    def __init__(self):
+        self.history = []
+        self.state = "active"
+        self.last_interaction = time.time()
+    
+    async def add_exchange(self, text: str, role: str):
+        """Add an exchange to conversation history"""
+        self.history.append({
+            "text": text,
+            "role": role,
+            "timestamp": time.time()
+        })
+        self.last_interaction = time.time()
+
+class EducationalConversation(BaseConversation):
+    """Educational conversation handling"""
+    def __init__(self):
+        super().__init__()
+        self.learning_topics = set()
+        self.knowledge_level = "beginner"
+        
+    async def add_exchange(self, text: str, role: str):
+        await super().add_exchange(text, role)
+        if role == "user":
+            self._update_learning_progress(text)
+
+class StoryConversation(BaseConversation):
+    """Story conversation handling"""
+    def __init__(self):
+        super().__init__()
+        self.narrative_state = "beginning"
+        self.characters = set()
+        
+    async def add_exchange(self, text: str, role: str):
+        await super().add_exchange(text, role)
+        if role == "assistant":
+            self._update_narrative_state(text)

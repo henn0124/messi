@@ -2,9 +2,28 @@ from pydantic_settings import BaseSettings
 from pathlib import Path
 import yaml
 import os
+from pydantic import BaseModel, Field
+
+class LearningConfig(BaseModel):
+    """Learning system configuration"""
+    enabled: bool = True
+    parameters: dict = {
+        "learning_rate": 0.1,
+        "decay_factor": 0.95,
+        "update_frequency": 3600,
+        "min_samples": 10
+    }
+    storage: dict = {
+        "data_path": "cache/learning/learning.json",
+        "config_path": "config/dynamic_config.yaml",
+        "logs_path": "logs/learning_updates.log"
+    }
 
 class Settings(BaseSettings):
     """Application settings loaded from .env and config.yaml"""
+    
+    # Add learning config to model
+    learning: LearningConfig = Field(default_factory=LearningConfig)
     
     # Directory Settings (from .env)
     BASE_DIR: Path = Path("/home/pi/messi")
@@ -56,23 +75,11 @@ class Settings(BaseSettings):
     COMMAND_SILENCE_TIMEOUT: float = 0.5
     COMMAND_PRE_BUFFER: float = 0.1
     COMMAND_MAX_SILENCE_CHUNKS: int = 20
-
-    class Config:
-        env_file = ".env"
-        env_file_encoding = 'utf-8'
-        extra = "allow"
-
+    
     def __init__(self, **kwargs):
-        # Add debug prints before super init
-        print(f"\nDebug - Config Paths:")
-        print(f"BASE_DIR: {Path('/home/pi/messi')}")
-        print(f"MODELS_DIR: {Path('/home/pi/messi/models')}")
-        print(f"Expected Wake Word Model: {Path('/home/pi/messi/models/hey-messy_en_raspberry-pi_v3_0_0.ppn')}")
-        
-        # Now do super init
         super().__init__(**kwargs)
         
-        # Load YAML config once
+        # Load YAML config
         config = self._load_yaml_config()
         
         # Update settings from YAML
@@ -82,11 +89,25 @@ class Settings(BaseSettings):
         self._create_directories()
         
         # Set derived paths
-        self.WAKE_WORD_MODEL_PATH = self.MODELS_DIR / config.get('wake_word', {}).get('model_name', 'hey-messy_en_raspberry-pi_v3_0_0.ppn')
+        self.WAKE_WORD_MODEL_PATH = self.MODELS_DIR / config.get('wake_word', {}).get(
+            'model_name', 'hey-messy_en_raspberry-pi_v3_0_0.ppn'
+        )
         
-        # Add post-init debug prints
+        # Add debug prints
+        print(f"\nDebug - Config Paths:")
+        print(f"BASE_DIR: {self.BASE_DIR}")
+        print(f"MODELS_DIR: {self.MODELS_DIR}")
+        print(f"Expected Wake Word Model: {self.WAKE_WORD_MODEL_PATH}")
         print(f"Final Wake Word Model Path: {self.WAKE_WORD_MODEL_PATH}")
         print(f"Model exists: {self.WAKE_WORD_MODEL_PATH.exists()}")
+        
+        # Update learning config from YAML
+        learning_config = config.get("learning", {})
+        self.learning = LearningConfig(
+            enabled=learning_config.get("enabled", True),
+            parameters=learning_config.get("parameters", self.learning.parameters),
+            storage=learning_config.get("storage", self.learning.storage)
+        )
 
     def _load_yaml_config(self) -> dict:
         """Load configuration from YAML file"""

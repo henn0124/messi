@@ -1,0 +1,29 @@
+learning:
+  metrics:
+    avg_conversation_length: 0
+    failed_exchanges: 0
+    successful_exchanges: 0
+    topic_success_rates: {}
+  optimizations:
+    context_weights:
+      current_entities: 0.3
+      previous_context: 0.4
+      user_engagement: 0.3
+    transition_rules:
+      cooldown_period: 60
+      max_transitions: 3
+      min_confidence: 0.6
+  parameters:
+    decay_factor: 0.95
+    learning_rate: 0.1
+    min_samples: 10
+    update_frequency: 3600
+  patterns:
+    context_transitions: {}
+    engagement_patterns: {}
+    topic_relationships: {}
+  thresholds:
+    context_switch_threshold: 0.7
+    engagement_threshold: 0.6
+    max_silence: 0.0
+    min_response_length: 2
