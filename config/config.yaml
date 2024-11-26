@@ -11,35 +11,22 @@ models:
 # Audio Settings
 audio:
   input:
-    device_index: 1
-    device_name: "TONOR TM20 Audio Device"
-    native_rate: 44100          # Native sample rate of microphone
-    processing_rate: 16000      # Required rate for Whisper/Porcupine
-    channels: 1                 # Mono audio input
-    chunk_size: 1024           # Size of audio chunks to process
-    buffer_size: 8192          # Audio buffer size
+    device_index: 2            # TONOR TM20 Audio Device
+    device_name: "TONOR TM20 Audio Device: USB Audio"
+    native_rate: 48000         # Native sample rate of microphone (48kHz)
+    processing_rate: 16000     # Required rate for Whisper/Porcupine
+    channels: 1                # Mono audio input
+    chunk_size: 1024          # Size of audio chunks to process
+    buffer_size: 8192         # Audio buffer size
     pre_emphasis: 0.5         # High-frequency boost filter
-                              # Valid range: 0.0 to 1.0
-                              # Common values:
-                              # 0.0  = No emphasis (flat response)
-                              # 0.5  = Moderate emphasis (good with DSP mics)
-                              # 0.95 = Standard speech emphasis
-                              # 0.97 = Traditional speech recognition
-                              # > 0.98 = May cause distortion
-                              # Note: With TONOR TM20's DSP, use 0.5
-    silence_threshold: 550     # Level below which is considered silence
-                              # Range: 0-32767 (16-bit audio RMS values)
-                              # Typical values:
-                              # < 500: Very quiet/silence
-                              # 500-2000: Normal speech
-                              # > 3000: Loud speech/noise
-  
+    silence_threshold: 550    # Level below which is considered silence
+
   output:
-    device_index: 2            # USB speaker device index
+    device_index: 1           # USB2.0 Device Audio
     device_name: "USB2.0 Device: Audio"
-    rate: 48000               # Output sample rate
-    volume: 1.0               # Output volume multiplier
-    chunk_size: 2048          # Output buffer size
+    rate: 48000              # Match input rate
+    volume: 1.0              # Output volume multiplier
+    chunk_size: 2048         # Output buffer size
 
 # Wake Word Settings
 wake_word:
@@ -91,7 +78,6 @@ learning:
 
 # Notes:
 # - All volume levels use RMS values from 16-bit audio (0-32767)
-# - Typical ranges:
 #   - Ambient noise: 200-800
 #   - Normal speech: 500-2000
 #   - Loud speech: 2000-4000

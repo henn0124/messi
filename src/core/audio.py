@@ -67,11 +67,13 @@ class AudioInterface:
         self.stream = None
         self.output_stream = None
         
-        # Audio configuration
-        self.input_sample_rate = 44100  # Native input rate
-        self.output_sample_rate = 24000  # TTS output rate
-        self.processing_rate = 16000    # Porcupine/Whisper rate
-        self.frame_length = 512         # Porcupine frame requirement
+        # Audio configuration - fixed for Raspberry Pi 4 USB setup
+        self.input_sample_rate = 48000  # USB speaker native rate
+        self.output_sample_rate = 48000  # Match input rate
+        self.processing_rate = 16000    # Required for Porcupine/Whisper
+        self.frame_length = 512         # Required Porcupine frame length
+        
+        # Calculate frame sizes for 48kHz
         self.samples_per_frame = int(self.input_sample_rate * self.frame_length / self.processing_rate)
         
         # Thread and state management
@@ -102,9 +104,9 @@ class AudioInterface:
             raise
 
     async def initialize(self):
-        """Initialize audio with better error handling"""
+        """Initialize audio for Raspberry Pi 4 USB setup"""
         try:
-            print("\nInitializing PyAudio...")
+            print("\nInitializing audio...")
             self.p = pyaudio.PyAudio()
             
             # List available devices
@@ -117,23 +119,23 @@ class AudioInterface:
                 print(f"    Max Output Channels: {dev['maxOutputChannels']}")
                 print(f"    Default Sample Rate: {dev['defaultSampleRate']}")
             
-            # Initialize input stream
-            print("\nInitializing input stream...")
+            # Initialize input stream (TONOR TM20)
+            print(f"\nInitializing input stream...")
             self.stream = self.p.open(
                 format=pyaudio.paInt16,
                 channels=1,
-                rate=self.input_sample_rate,
+                rate=48000,  # TONOR TM20 native rate (48kHz)
                 input=True,
-                input_device_index=1,  # TONOR TM20
+                input_device_index=2,  # TONOR TM20 index
                 frames_per_buffer=self.samples_per_frame
             )
             
-            if not self.stream.is_active():
-                print("❌ Failed to activate audio stream")
-                return False
+            if self.stream.is_active():
+                print(f"✓ Audio input initialized at 48000Hz")
+                return True
                 
-            print("✓ Audio initialized successfully")
-            return True
+            print("❌ Failed to initialize audio")
+            return False
             
         except Exception as e:
             print(f"Error initializing audio: {e}")
@@ -168,19 +170,27 @@ class AudioInterface:
             print(f"Error in monitoring loop: {e}")
 
     async def _monitor_wake_word(self):
-        """Monitor audio stream for wake word"""
+        """Monitor audio stream for wake word with optimized 48kHz handling"""
         while self.running:
             try:
                 # Read audio frame
                 data = self.stream.read(self.samples_per_frame, exception_on_overflow=False)
                 audio = np.frombuffer(data, dtype=np.int16)
                 
-                # Resample to 16kHz for Porcupine
+                # Resample 48kHz to 16kHz efficiently
+                ratio = 16000 / 48000  # Fixed ratio for known rates
+                target_length = int(len(audio) * ratio)
                 resampled = np.interp(
-                    np.linspace(0, len(audio), self.frame_length),
+                    np.linspace(0, len(audio)-1, target_length),
                     np.arange(len(audio)),
                     audio
                 ).astype(np.int16)
+                
+                # Ensure correct frame length
+                if len(resampled) > self.frame_length:
+                    resampled = resampled[:self.frame_length]
+                elif len(resampled) < self.frame_length:
+                    resampled = np.pad(resampled, (0, self.frame_length - len(resampled)))
                 
                 # Process wake word
                 result = await asyncio.get_event_loop().run_in_executor(
@@ -207,7 +217,7 @@ class AudioInterface:
                 continue
 
     async def _get_next_audio_frame(self):
-        """Get audio frame with efficient processing"""
+        """Get audio frame with efficient processing for 48kHz"""
         try:
             # Run blocking audio read in executor
             pcm = await asyncio.get_event_loop().run_in_executor(
@@ -220,18 +230,15 @@ class AudioInterface:
             # Process with numpy for efficiency
             audio = np.frombuffer(pcm, dtype=np.int16)
             
-            # Resample if needed
-            if self.input_sample_rate != 16000:
-                ratio = 16000 / self.input_sample_rate
-                target_length = int(len(audio) * ratio)
-                indices = np.linspace(0, len(audio)-1, target_length).astype(int)
-                resampled = audio[indices]
-                
-                if len(resampled) > self.frame_length:
-                    return resampled[:self.frame_length]
-                return np.pad(resampled, (0, self.frame_length - len(resampled)))
+            # Resample 48kHz to 16kHz more efficiently
+            ratio = 16000 / 48000  # Fixed ratio for known rates
+            target_length = int(len(audio) * ratio)
+            indices = np.linspace(0, len(audio)-1, target_length).astype(int)
+            resampled = audio[indices]
             
-            return audio
+            if len(resampled) > self.frame_length:
+                return resampled[:self.frame_length]
+            return np.pad(resampled, (0, self.frame_length - len(resampled)))
             
         except Exception as e:
             print(f"Error reading audio frame: {e}")
@@ -332,56 +339,49 @@ class AudioInterface:
                 print(f"Sample Width: {sample_width} bytes")
                 print(f"Frame Rate: {frame_rate} Hz")
             
-            # Initialize output stream with Raspberry Pi safe rate
+            # Initialize output stream
             if not self.output_stream:
                 print("Initializing output stream...")
-                # Try 48000Hz first, then 44100Hz if that fails
-                try:
-                    print("Trying 48000Hz output...")
-                    self.output_stream = self.p.open(
-                        format=pyaudio.paInt16,
-                        channels=channels,
-                        rate=48000,
-                        output=True,
-                        output_device_index=self.settings.AUDIO_OUTPUT_DEVICE_INDEX,
-                        frames_per_buffer=2048
-                    )
-                except:
-                    print("48000Hz failed, trying 44100Hz...")
-                    self.output_stream = self.p.open(
-                        format=pyaudio.paInt16,
-                        channels=channels,
-                        rate=44100,
-                        output=True,
-                        output_device_index=self.settings.AUDIO_OUTPUT_DEVICE_INDEX,
-                        frames_per_buffer=2048
-                    )
+                self.output_stream = self.p.open(
+                    format=pyaudio.paInt16,
+                    channels=channels,
+                    rate=48000,  # Use 48kHz for USB audio
+                    output=True,
+                    output_device_index=1,  # USB2.0 Device Audio
+                    frames_per_buffer=2048
+                )
                 print(f"Output stream initialized at {self.output_stream._rate}Hz")
             
-            # Reopen WAV and resample for playback
+            # Reopen WAV and play with proper resampling
             wav_buffer.seek(0)
             with wave.open(wav_buffer, 'rb') as wav:
                 print("\nPlaying audio...")
                 chunk_size = 2048
                 data = wav.readframes(chunk_size)
                 
-                # Resample data if needed
+                # Resample if input and output rates don't match
                 if frame_rate != self.output_stream._rate:
+                    print(f"Resampling from {frame_rate}Hz to {self.output_stream._rate}Hz")
                     ratio = self.output_stream._rate / frame_rate
-                    while data:
+                    while data and not self.interrupt_event.is_set():
                         # Convert to numpy array
                         audio = np.frombuffer(data, dtype=np.int16)
-                        # Resample
+                        
+                        # Calculate target length
+                        target_length = int(len(audio) * ratio)
+                        
+                        # High quality resampling
                         resampled = np.interp(
-                            np.linspace(0, len(audio)-1, int(len(audio) * ratio)),
+                            np.linspace(0, len(audio)-1, target_length, endpoint=False),
                             np.arange(len(audio)),
                             audio
                         ).astype(np.int16)
-                        # Play
+                        
+                        # Play resampled audio
                         self.output_stream.write(resampled.tobytes())
                         data = wav.readframes(chunk_size)
                 else:
-                    # Play at original rate
+                    # Play at original rate if rates match
                     while data and not self.interrupt_event.is_set():
                         self.output_stream.write(data)
                         data = wav.readframes(chunk_size)
@@ -390,7 +390,6 @@ class AudioInterface:
                 
         except Exception as e:
             print(f"Error during playback: {e}")
-            import traceback
             traceback.print_exc()
             
             # Try to recover stream
