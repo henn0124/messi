@@ -12,18 +12,18 @@ models:
 audio:
   input:
     device_index: 2            # TONOR TM20 Audio Device
-    device_name: "TONOR TM20 Audio Device: USB Audio"
+    device_name: "TONOR TM20 Audio Device: USB Audio"  # PyAudio device name
     native_rate: 48000         # Native sample rate of microphone (48kHz)
     processing_rate: 16000     # Required rate for Whisper/Porcupine
     channels: 1                # Mono audio input
     chunk_size: 1024          # Size of audio chunks to process
     buffer_size: 8192         # Audio buffer size
     pre_emphasis: 0.5         # High-frequency boost filter
-    silence_threshold: 550    # Level below which is considered silence
+    silence_threshold: 100    # Lower threshold for better detection
 
   output:
     device_index: 1           # USB2.0 Device Audio
-    device_name: "USB2.0 Device: Audio"
+    device_name: "USB2.0 Device: Audio"  # PyAudio device name
     rate: 48000              # Match input rate
     volume: 1.0              # Output volume multiplier
     chunk_size: 2048         # Output buffer size
@@ -32,20 +32,20 @@ audio:
 wake_word:
   name: "hey messy"
   model_name: "hey-messy_en_raspberry-pi_v3_0_0.ppn"
-  threshold: 0.85              # Picovoice recommended default
+  threshold: 0.5               # More sensitive setting
                              # Range: 0.0-1.0
-                             # 0.0 = Least sensitive (fewer detections)
+                             # 0.0 = Most sensitive (more detections)
                              # 0.5 = Default balance
-                             # 1.0 = Most sensitive (more detections)
-  min_volume: 600            # Minimum volume to trigger detection
+                             # 1.0 = Least sensitive (fewer detections)
+  min_volume: 100            # Lower minimum volume for easier detection
                             # Range: 0-32767 (16-bit audio RMS values)
                             # Set above ambient noise (~1.5x ambient)
-  max_volume: 2000          # Maximum volume to consider
+  max_volume: 4000          # Higher maximum volume for louder speech
                            # Range: 0-32767 (16-bit audio RMS values)
-                           # Set below clipping (~2x normal speech)
-  detection_window: 2.0      # Time window to detect wake word (seconds)
-  consecutive_frames: 1      # Required consecutive detections
-  retry_count: 3            # Number of retries if detection fails
+                           # Almost full range for better detection
+  detection_window: 1.0      # Shorter time window (was 2.0)
+  consecutive_frames: 1      # Single frame detection is enough
+  retry_count: 5            # More retries if detection fails
 
 # Command Settings
 command:

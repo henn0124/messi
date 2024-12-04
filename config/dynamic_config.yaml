@@ -2,37 +2,6 @@ learning:
   patterns: {}
   success_rates: {}
   weights:
-    context:
-      current_entities: 0.3
-      previous_context: 0.4
-      topics: {}
-      transitions:
-        food:
-          entities:
-          - restaurant
-          - food
-          - meal
-          related:
-          - cuisine
-          - restaurants
-          - chefs
-          topics:
-          - cooking
-          - dining
-          - recipes
-        france:
-          entities:
-          - france
-          - paris
-          - french
-          related:
-          - french_food
-          - french_culture
-          - paris
-          topics:
-          - cuisine
-          - culture
-          - travel
-      user_engagement: 0.3
-    last_updated: '2024-11-26T13:29:26.377593'
+    context: {}
+    last_updated: '2024-12-03T21:55:58.797853'
     patterns: {}

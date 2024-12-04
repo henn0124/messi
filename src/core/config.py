@@ -3,6 +3,7 @@ from pathlib import Path
 import yaml
 import os
 from pydantic import BaseModel, Field
+from typing import Dict
 
 class LearningConfig(BaseModel):
     """Learning system configuration"""
@@ -24,6 +25,12 @@ class Settings(BaseSettings):
     
     # Add learning config to model
     learning: LearningConfig = Field(default_factory=LearningConfig)
+    
+    # Add user config to model
+    user_config: Dict = {}
+    
+    # Add raw audio config
+    audio: Dict = Field(default_factory=dict)
     
     # Directory Settings (from .env)
     BASE_DIR: Path = Path("/home/pi/messi")
@@ -85,6 +92,9 @@ class Settings(BaseSettings):
         # Update settings from YAML
         self._update_from_yaml(config)
         
+        # Load user config
+        self._load_user_config()
+        
         # Create directories
         self._create_directories()
         
@@ -136,16 +146,22 @@ class Settings(BaseSettings):
             audio_input = config['audio'].get('input', {})
             audio_output = config['audio'].get('output', {})
             
+            # Input settings
             self.AUDIO_INPUT_DEVICE_INDEX = int(audio_input.get('device_index', self.AUDIO_INPUT_DEVICE_INDEX))
-            self.AUDIO_OUTPUT_DEVICE_INDEX = int(audio_output.get('device_index', self.AUDIO_OUTPUT_DEVICE_INDEX))
             self.AUDIO_NATIVE_RATE = int(audio_input.get('native_rate', self.AUDIO_NATIVE_RATE))
             self.AUDIO_PROCESSING_RATE = int(audio_input.get('processing_rate', self.AUDIO_PROCESSING_RATE))
-            self.AUDIO_OUTPUT_RATE = int(audio_output.get('rate', self.AUDIO_OUTPUT_RATE))
             self.AUDIO_CHANNELS = int(audio_input.get('channels', self.AUDIO_CHANNELS))
             self.AUDIO_CHUNK_SIZE = int(audio_input.get('chunk_size', self.AUDIO_CHUNK_SIZE))
             self.AUDIO_BUFFER_SIZE = int(audio_input.get('buffer_size', self.AUDIO_BUFFER_SIZE))
             self.AUDIO_PRE_EMPHASIS = float(audio_input.get('pre_emphasis', self.AUDIO_PRE_EMPHASIS))
             self.AUDIO_SILENCE_THRESHOLD = int(audio_input.get('silence_threshold', self.AUDIO_SILENCE_THRESHOLD))
+            
+            # Output settings
+            self.AUDIO_OUTPUT_DEVICE_INDEX = int(audio_output.get('device_index', self.AUDIO_OUTPUT_DEVICE_INDEX))
+            self.AUDIO_OUTPUT_RATE = int(audio_output.get('rate', self.AUDIO_OUTPUT_RATE))
+            
+            # Store raw config for compatibility
+            self.audio = config['audio']
 
         if 'wake_word' in config:
             wake_word = config['wake_word']
@@ -167,14 +183,46 @@ class Settings(BaseSettings):
 
     def _create_directories(self):
         """Create necessary directories"""
-        for directory in [self.CACHE_DIR, self.MODELS_DIR, self.TEMP_DIR, self.LOG_DIR]:
-            directory.mkdir(parents=True, exist_ok=True)
+        directories = [
+            self.CACHE_DIR,
+            self.MODELS_DIR, 
+            self.TEMP_DIR,
+            self.LOG_DIR,
+            Path("data"),
+            Path("config"),
+            self.CACHE_DIR / "learning",
+            self.CACHE_DIR / "tts",
+            self.CACHE_DIR / "responses"
+        ]
         
-        # Create subdirectories
-        (self.CACHE_DIR / "tts").mkdir(exist_ok=True)
-        (self.CACHE_DIR / "responses").mkdir(exist_ok=True)
+        for directory in directories:
+            directory.mkdir(parents=True, exist_ok=True)
 
     def validate_paths(self):
         """Validate that required files exist"""
         if not self.WAKE_WORD_MODEL_PATH.exists():
             raise FileNotFoundError(f"Wake word model not found at: {self.WAKE_WORD_MODEL_PATH}")
+
+    def _load_user_config(self):
+        """Load user configuration"""
+        try:
+            user_config_path = Path("config/user_config.yaml")
+            if user_config_path.exists():
+                with open(user_config_path) as f:
+                    self.user_config = yaml.safe_load(f)
+            else:
+                print("Warning: No user_config.yaml found, using defaults")
+                self.user_config = {
+                    "session": {
+                        "require_reidentification": False,
+                        "timeout_minutes": 30
+                    }
+                }
+        except Exception as e:
+            print(f"Error loading user config: {e}")
+            self.user_config = {
+                "session": {
+                    "require_reidentification": False,
+                    "timeout_minutes": 30
+                }
+            }

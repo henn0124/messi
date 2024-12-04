@@ -1,0 +1,53 @@
+# User Configuration
+# -----------------
+# Defines user profiles, preferences, and access controls
+
+users:
+  default:
+    name: "Guest"
+    type: "guest"
+    age_group: null
+    preferences: {}
+    restrictions: []
+
+  profiles:
+    children:
+      age_ranges:
+        young: "5-7"
+        middle: "8-10"
+        older: "11-12"
+      content_filters:
+        - "age_appropriate"
+        - "educational"
+        - "safe_search"
+      features:
+        - "bedtime_stories"
+        - "educational_games"
+        - "vocabulary"
+        - "math_help"
+    
+    parents:
+      permissions:
+        - "configure_settings"
+        - "view_analytics"
+        - "manage_users"
+        - "set_restrictions"
+      features:
+        - "admin_controls"
+        - "progress_reports"
+        - "usage_monitoring"
+
+settings:
+  voice_recognition:
+    enable_user_identification: true
+    confidence_threshold: 0.85
+    training_samples_required: 3
+    
+  session:
+    timeout_minutes: 30
+    require_reidentification: false
+    
+  privacy:
+    data_retention_days: 30
+    collect_analytics: true
+    store_voice_samples: false

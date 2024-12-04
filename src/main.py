@@ -12,22 +12,20 @@ import csv
 from datetime import datetime
 import traceback
 import yaml
+import uuid
 
 from core.config import Settings
 from core.logger import ConversationLogger
 from core.learning_manager import LearningManager
 from core.context_manager import ContextManager
-from core.conversation_manager import ConversationManager
-from core.audio import AudioInterface
-from core.tts import TextToSpeech
-from core.speech import SpeechManager
-from core.assistant_router import AssistantRouter
+from core.router import AssistantRouter
 from core.cache_manager import ResponseCache
 from openai import AsyncOpenAI
 from core.speech import SpeechManager
 from core.audio_processor import AudioProcessor
-from core.learning_manager import LearningManager
-from core.context_manager import ContextManager
+from core.audio import AudioInterface
+from core.tts import TextToSpeech
+from core.user_manager import UserManager
 
 class ResourceMonitor:
     def __init__(self):
@@ -81,52 +79,106 @@ class ResourceMonitor:
 
 class MessiAssistant:
     def __init__(self):
+        # Initialize settings
         self.settings = Settings()
         
-        # Initialize components
-        self.learning_manager = LearningManager() if self.settings.learning.enabled else None
-        self.context_manager = ContextManager(self.learning_manager)
+        # Initialize logger first
+        self.logger = ConversationLogger()
         
-        # Set context_manager reference in learning_manager
-        if self.learning_manager:
-            self.learning_manager.context_manager = self.context_manager
-            
-        self.audio = AudioInterface()
-        self.tts = TextToSpeech()
+        # Initialize user management
+        self.user_manager = UserManager(settings=self.settings, logger=self.logger)
+        
+        # Initialize router with user manager
+        self.router = AssistantRouter(user_manager=self.user_manager)
+        
+        # Initialize speech components
         self.speech = SpeechManager()
-        self.router = AssistantRouter()
-        self.running = False
-        self.executor = ThreadPoolExecutor(max_workers=2)
+        self.tts = TextToSpeech()
         
-        # Initialize OpenAI client
-        self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
+        # Initialize learning system
+        self.learning_manager = LearningManager() if self.settings.learning.enabled else None
         
-        # Add conversation state tracking
+        # Initialize audio and wake word detector last
+        self.audio = None
+        self.wake_word_detector = None
+        
+        # Initialize conversation state
         self.in_conversation = False
-        self.conversation_start_time = None
-        self.last_interaction_time = None
+        self.current_user = None
+        self.running = False
+
+    async def initialize(self):
+        """Initialize async components"""
+        try:
+            # Initialize router first
+            await self.router.initialize()
+            
+            # Initialize audio interface
+            from core.audio import AudioInterface
+            self.audio = AudioInterface()
+            if not await self.audio.initialize():
+                raise RuntimeError("Failed to initialize audio interface")
+            
+            # Initialize wake word detector
+            from core.wake_word import WakeWordDetector
+            self.wake_word_detector = WakeWordDetector(settings=self.settings)
+            
+            return True
+            
+        except Exception as e:
+            print(f"Error during initialization: {e}")
+            traceback.print_exc()
+            return False
 
     async def start(self):
         """Start the assistant"""
         try:
             print("\nStarting Messi Assistant...")
+            
+            # Initialize components
+            if not await self.initialize():
+                print("❌ Failed to initialize components!")
+                return
+            
             self.running = True
             
-            # Initialize async components
+            # Initialize and validate learning system
             if self.learning_manager:
                 await self.learning_manager.initialize()
-                print("Learning system enabled - using adaptive configurations")
+                
+                # Validate learning system
+                validation = await self.learning_manager.validate_learning_system()
+                
+                print("\nLearning System Validation:")
+                print("Components:")
+                for component, status in validation["components"].items():
+                    print(f"  {component}: {'✓' if status else '✗'}")
+                    
+                print("\nFiles:")
+                for file, status in validation["files"].items():
+                    print(f"  {file}: {'✓' if status else '✗'}")
+                    
+                print("\nMetrics:")
+                for metric, value in validation["metrics"].items():
+                    print(f"  {metric}: {value}")
+                    
+                print("\nAutonomous Features:")
+                for feature, status in validation["autonomous_features"].items():
+                    print(f"  {feature}: {'✓' if status else '✗'}")
+                    
+                # Check if system is fully autonomous
+                is_autonomous = all(validation["autonomous_features"].values())
+                print(f"\nSystem is{' ' if is_autonomous else ' not '}fully autonomous")
             else:
                 print("Learning system disabled - using static configurations")
             
-            # Initialize audio
-            if not await self.audio.initialize():
-                print("❌ Failed to initialize audio!")
+            # Start wake word detection if everything is initialized
+            if self.audio and self.wake_word_detector:
+                await self.audio.start_wake_word_detection(self.on_wake_word)
+                print("\nListening for wake word...")
+            else:
+                print("❌ Cannot start wake word detection - components not initialized!")
                 return
-            
-            # Start wake word detection
-            await self.audio.start_wake_word_detection(self.on_wake_word)
-            print("\nListening for wake word...")
             
             # Keep running until stopped
             while self.running:
@@ -145,9 +197,14 @@ class MessiAssistant:
             await self.stop()
 
     async def on_wake_word(self, audio_data: bytes):
-        """Handle wake word detection with error handling"""
+        """Handle wake word detection with user context"""
         try:
+            # Identify user from voice
+            self.current_user = await self.user_manager.identify_user(audio_data)
+            user_id = self.current_user["id"]
+            
             # Set conversation state
+            self.in_conversation = True
             if self.learning_manager:
                 self.learning_manager.in_conversation = True
             
@@ -162,15 +219,26 @@ class MessiAssistant:
             print(f"\n✓ Recognized Text ({len(text)} chars):")
             print(f"'{text}'")
             
-            # Process request
-            response = await self.router.route_request(text)
+            # Create request context with user info
+            request_context = {
+                "user_id": user_id,
+                "timestamp": datetime.now().isoformat(),
+                "conversation_id": str(uuid.uuid4())
+            }
+            
+            # Process request with user context
+            response = await self.router.route_request(text, request_context)
+            
+            # Update user activity
+            self.user_manager.update_user_activity(user_id)
             
             # Record learning data if enabled
             if self.learning_manager and response:
                 await self.learning_manager.record_exchange({
                     "text": text,
                     "context": response.get("context", "unknown"),
-                    "success": True
+                    "success": True,
+                    "user_id": user_id
                 })
             
             # Generate and play response
@@ -203,12 +271,16 @@ class MessiAssistant:
                 self.learning_manager.in_conversation = False
 
     async def listen_for_followup(self):
-        """Listen for follow-up with better handling"""
+        """Listen for follow-up with user context"""
         try:
             await asyncio.sleep(0.5)  # Brief pause
             
             audio_data = await self.audio._collect_command_audio(duration=5.0)
             if audio_data:
+                # Re-identify user for security
+                if self.settings.user_config["session"]["require_reidentification"]:
+                    self.current_user = await self.user_manager.identify_user(audio_data)
+                
                 text = await self.speech.process_audio(audio_data)
                 
                 if text and not text.endswith('...'):
@@ -236,10 +308,9 @@ class MessiAssistant:
 
 if __name__ == "__main__":
     assistant = MessiAssistant()
-    try:
-        asyncio.run(assistant.start())
-    except KeyboardInterrupt:
-        print("\nShutting down...")
-    except Exception as e:
-        print(f"Fatal error: {e}")
-        traceback.print_exc() 
+    
+    async def main():
+        await assistant.initialize()
+        await assistant.start()
+    
+    asyncio.run(main()) 

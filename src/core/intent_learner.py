@@ -66,6 +66,7 @@ import asyncio
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 import csv
+from core.config import Settings
 
 class IntentLearner:
     # Default configuration
@@ -88,8 +89,8 @@ class IntentLearner:
         }
     }
 
-    def __init__(self, learning_manager: 'LearningManager' = None):
-        self.settings = Settings()
+    def __init__(self, learning_manager: 'LearningManager' = None, settings: Optional[Settings] = None):
+        self.settings = settings or Settings()
         self.learning_manager = learning_manager  # Reference to learning manager
         
         # Load skills config
@@ -109,8 +110,13 @@ class IntentLearner:
         self.recent_interactions = []
         self.max_interaction_history = 100  # Keep last 100 interactions
         
-        # Add periodic cleanup task
-        asyncio.create_task(self._periodic_pattern_maintenance())
+        # Initialize maintenance task as None
+        self.maintenance_task = None
+    
+    async def initialize(self):
+        """Initialize async components of the IntentLearner"""
+        if self.maintenance_task is None:
+            self.maintenance_task = asyncio.create_task(self._periodic_pattern_maintenance())
     
     async def learn_from_interaction(self, text: str, selected_intent: str, success: bool):
         """Learn from user interaction"""
@@ -372,3 +378,33 @@ class IntentLearner:
             patterns["successful_attempts"] += 1
         
         patterns["success_rate"] = patterns["successful_attempts"] / patterns["total_attempts"]
+
+    def _load_skills_config(self) -> dict:
+        """Load skills configuration from settings"""
+        try:
+            # Get skills config from settings
+            if hasattr(self.settings, 'skills'):
+                return self.settings.skills
+            
+            # If no skills config in settings, return default empty structure
+            return {
+                "intents": {
+                    "patterns": {},
+                    "thresholds": {
+                        "learning_rate": 0.1,
+                        "max_patterns": 20
+                    }
+                }
+            }
+        except Exception as e:
+            print(f"Error loading skills config: {e}")
+            # Return default config on error
+            return {
+                "intents": {
+                    "patterns": {},
+                    "thresholds": {
+                        "learning_rate": 0.1,
+                        "max_patterns": 20
+                    }
+                }
+            }

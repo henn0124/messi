@@ -768,3 +768,64 @@ class LearningManager:
     def is_conversation_active(self) -> bool:
         """Check if conversation is active"""
         return self.in_conversation
+    
+    async def validate_learning_system(self) -> Dict:
+        """Validate learning system components and autonomy"""
+        try:
+            validation = {
+                "components": {
+                    "intent_learning": False,
+                    "pattern_learning": False,
+                    "context_learning": False,
+                    "queue_processing": False
+                },
+                "files": {
+                    "learning_data": False,
+                    "dynamic_config": False
+                },
+                "metrics": {
+                    "patterns_count": 0,
+                    "success_rates_count": 0,
+                    "queue_size": 0
+                },
+                "autonomous_features": {
+                    "pattern_discovery": False,
+                    "weight_adjustment": False,
+                    "context_optimization": False
+                }
+            }
+            
+            # Check components
+            validation["components"]["intent_learning"] = hasattr(self, 'intent_learning')
+            validation["components"]["pattern_learning"] = hasattr(self, 'patterns')
+            validation["components"]["context_learning"] = self.context_manager is not None
+            validation["components"]["queue_processing"] = hasattr(self, 'learning_queue')
+            
+            # Check files
+            validation["files"]["learning_data"] = self.learning_file.exists()
+            validation["files"]["dynamic_config"] = self.config_file.exists()
+            
+            # Check metrics
+            validation["metrics"]["patterns_count"] = len(self.intent_learning.get("patterns", {}))
+            validation["metrics"]["success_rates_count"] = len(self.intent_learning.get("success_rates", {}))
+            validation["metrics"]["queue_size"] = self.learning_queue.qsize()
+            
+            # Check autonomous features
+            validation["autonomous_features"]["pattern_discovery"] = (
+                hasattr(self, '_discover_new_patterns') and 
+                callable(getattr(self, '_discover_new_patterns'))
+            )
+            validation["autonomous_features"]["weight_adjustment"] = (
+                hasattr(self, '_adjust_pattern_weight') and 
+                callable(getattr(self, '_adjust_pattern_weight'))
+            )
+            validation["autonomous_features"]["context_optimization"] = (
+                hasattr(self, 'optimize_context_manager') and 
+                callable(getattr(self, 'optimize_context_manager'))
+            )
+            
+            return validation
+            
+        except Exception as e:
+            print(f"Error validating learning system: {e}")
+            return {}

@@ -7,26 +7,27 @@ from .learning_manager import LearningManager
 from .intent_learner import IntentLearner
 import yaml
 from pathlib import Path
-from .user_manager import UserManager
 
 class AssistantRouter:
     def __init__(self, user_manager=None):
         self.settings = Settings()
+        self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
         self.user_manager = user_manager
         
-        # Initialize components
-        self.intent_learner = IntentLearner(settings=self.settings) if self.settings.learning.enabled else None
-        self.context_manager = None  # Will be set by MessiAssistant
+        # Load skills config
+        self.skills_config = self._load_skills_config()
         
-        # Track conversation state
-        self.current_context = None
-        self.last_intent = None
-        self.conversation_history = []
-
-    async def initialize(self):
-        """Initialize async components of the router"""
-        if self.intent_learner:
-            await self.intent_learner.initialize()
+        # Initialize learning components
+        self.learning_manager = LearningManager() if self.settings.learning.enabled else None
+        self.intent_learner = IntentLearner() if self.settings.learning.enabled else None
+        self.context_manager = ContextManager(self.learning_manager)
+        
+        # Initialize skills dictionary
+        self.skills = {}
+        
+        # Load available skills
+        self._load_skills()
+        self.logger = ConversationLogger()
 
     def _load_skills_config(self) -> Dict:
         """Load skills configuration"""
@@ -211,4 +212,4 @@ class AssistantRouter:
             
         except Exception as e:
             print(f"Error extracting entities: {e}")
-            return []
+            return [] 
