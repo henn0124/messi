@@ -70,6 +70,11 @@ class LearningManager:
             "topic_success_rates": {}
         }
         
+        # Initialize learning queue
+        self.learning_queue = []
+        self.is_processing = False
+        self.in_conversation = False
+        
         if self.learning_enabled:
             # Get paths from learning config
             self.learning_file = Path(self.learning_config["storage"]["data_path"])
@@ -79,20 +84,12 @@ class LearningManager:
             self.learning_file.parent.mkdir(parents=True, exist_ok=True)
             self.config_file.parent.mkdir(parents=True, exist_ok=True)
             
-            # Initialize learning components
-            self._initialize_learning_components()
-            
-            # Start autonomous learning tasks
-            asyncio.create_task(self._autonomous_learning_loop())
+            # Initialize data
+            self._initialize_learning_data()
             
             print(f"Learning system initialized with data at: {self.learning_file}")
         else:
             print("Learning system disabled via config")
-        
-        # Add queue for deferred learning tasks
-        self.learning_queue = asyncio.Queue()
-        self.is_processing = False
-        self.in_conversation = False  # Track conversation state
         
         # Track intent learning
         self.intent_learning = {
@@ -103,10 +100,20 @@ class LearningManager:
     
     async def initialize(self):
         """Initialize async components"""
-        if self.learning_enabled:
-            # Start learning loop
-            asyncio.create_task(self._continuous_learning_loop())
+        try:
+            # Initialize async queue
+            self.learning_queue = asyncio.Queue()
+            
+            # Load initial data
+            if self.learning_enabled:
+                await self._initialize_learning_components()
+                
             print("Learning system async components initialized")
+            return True
+            
+        except Exception as e:
+            print(f"Error initializing learning system: {e}")
+            return False
     
     async def record_exchange(self, exchange_data: Dict):
         """Queue exchange data for processing during downtime"""
@@ -121,32 +128,34 @@ class LearningManager:
         })
         
     async def process_learning_queue(self):
-        """Process queued learning tasks during system downtime"""
-        # Don't process if conversation is active
-        if self.in_conversation:
-            return
-            
-        self.is_processing = True
+        """Process pending learning updates"""
         try:
+            # Skip if already processing or in conversation
+            if self.is_processing or self.in_conversation:
+                return
+                
+            self.is_processing = True
             while not self.learning_queue.empty():
-                # Check conversation state before each task
-                if self.in_conversation:
-                    print("Conversation started - pausing learning queue")
-                    break
+                item = await self.learning_queue.get()
+                try:
+                    if item["type"] == "pattern":
+                        await self._update_pattern(item["data"])
+                    elif item["type"] == "weight":
+                        await self._update_weight(item["data"])
+                    elif item["type"] == "context":
+                        await self._update_context(item["data"])
                     
-                task = await self.learning_queue.get()
-                
-                if task["type"] == "exchange":
-                    await self._process_exchange(task["data"])
-                
-                self.learning_queue.task_done()
-                await asyncio.sleep(0.1)  # Allow other tasks to run
-                
+                    # Mark task as done
+                    self.learning_queue.task_done()
+                    
+                except Exception as e:
+                    print(f"Error processing queue item: {e}")
+                    
         except Exception as e:
             print(f"Error processing learning queue: {e}")
         finally:
             self.is_processing = False
-            
+    
     async def _process_exchange(self, exchange_data: Dict):
         """Process a single exchange (during downtime)"""
         try:
@@ -788,66 +797,75 @@ class LearningManager:
     async def validate_learning_system(self) -> Dict:
         """Validate learning system components and autonomy"""
         try:
+            # Ensure queue is initialized
+            if not isinstance(self.learning_queue, asyncio.Queue):
+                self.learning_queue = asyncio.Queue()
+            
             validation = {
                 "components": {
-                    "intent_learning": False,
-                    "pattern_learning": False,
-                    "context_learning": False,
-                    "queue_processing": False
+                    "intent_learning": hasattr(self, 'intent_learning'),
+                    "pattern_learning": hasattr(self, 'patterns'),
+                    "context_learning": hasattr(self, 'context_learning'),
+                    "queue_processing": isinstance(self.learning_queue, asyncio.Queue)
                 },
                 "files": {
-                    "learning_data": False,
-                    "dynamic_config": False
+                    "learning_data": self.learning_file.exists(),
+                    "dynamic_config": self.config_file.exists()
                 },
                 "metrics": {
-                    "patterns_count": 0,
-                    "success_rates_count": 0,
-                    "queue_size": 0
+                    "patterns_count": sum(len(p) for p in self.intent_learning["patterns"].values()) if hasattr(self, 'intent_learning') else 0,
+                    "success_rates_count": len(self.intent_learning.get("success_rates", {})) if hasattr(self, 'intent_learning') else 0,
+                    "queue_size": self.get_queue_size()
                 },
                 "autonomous_features": {
-                    "pattern_discovery": False,
-                    "weight_adjustment": False,
-                    "context_optimization": False
+                    "pattern_discovery": (
+                        hasattr(self, 'patterns') and
+                        len(self.patterns.get("context_transitions", {})) > 0
+                    ),
+                    "weight_adjustment": (
+                        hasattr(self, 'weights') and
+                        len(self.weights.get("context", {})) > 0
+                    ),
+                    "context_optimization": (
+                        hasattr(self, 'context_learning') and
+                        len(self.context_learning.get("patterns", {})) > 0
+                    )
                 }
             }
             
-            # Check components
-            validation["components"]["intent_learning"] = hasattr(self, 'intent_learning')
-            validation["components"]["pattern_learning"] = hasattr(self, 'patterns')
-            validation["components"]["context_learning"] = self.context_manager is not None
-            validation["components"]["queue_processing"] = hasattr(self, 'learning_queue')
+            # Print validation summary
+            print("\nLearning System Validation:")
+            print("Components:")
+            for component, status in validation["components"].items():
+                print(f"  {component}: {'✓' if status else '✗'}")
             
-            # Check files
-            validation["files"]["learning_data"] = self.learning_file.exists()
-            validation["files"]["dynamic_config"] = self.config_file.exists()
+            print("\nFiles:")
+            for file, status in validation["files"].items():
+                print(f"  {file}: {'✓' if status else '✗'}")
             
-            # Check metrics
-            if hasattr(self, 'intent_learning'):
-                validation["metrics"]["patterns_count"] = sum(len(p) for p in self.intent_learning["patterns"].values())
-                validation["metrics"]["success_rates_count"] = len(self.intent_learning.get("success_rates", {}))
-            if hasattr(self, 'learning_queue'):
-                validation["metrics"]["queue_size"] = len(self.learning_queue)
+            print("\nMetrics:")
+            for metric, value in validation["metrics"].items():
+                print(f"  {metric}: {value}")
+            
+            print("\nAutonomous Features:")
+            for feature, status in validation["autonomous_features"].items():
+                print(f"  {feature}: {'✓' if status else '✗'}")
+            
+            if not all(validation["autonomous_features"].values()):
+                print("\nSystem is not fully autonomous")
+            else:
+                print("\nSystem is fully autonomous")
                 
-            # Check autonomous features
-            validation["autonomous_features"]["pattern_discovery"] = (
-                validation["components"]["pattern_learning"] and
-                validation["metrics"]["patterns_count"] > 0
-            )
-            validation["autonomous_features"]["weight_adjustment"] = (
-                hasattr(self, 'weights') and
-                len(self.weights.get("context", {})) > 0
-            )
-            validation["autonomous_features"]["context_optimization"] = (
-                self.context_manager is not None and
-                hasattr(self, 'patterns') and
-                len(self.patterns.get("context_transitions", {})) > 0
-            )
-            
             return validation
             
         except Exception as e:
             print(f"Error validating learning system: {e}")
-            return validation
+            return {
+                "components": {},
+                "files": {},
+                "metrics": {},
+                "autonomous_features": {}
+            }
     
     def register_context_manager(self, context_manager):
         """Register context manager for learning integration"""
@@ -883,7 +901,7 @@ class LearningManager:
                 "metrics": {
                     "patterns_count": sum(len(p) for p in self.intent_learning["patterns"].values()) if hasattr(self, 'intent_learning') else 0,
                     "success_rates_count": len(self.intent_learning.get("success_rates", {})) if hasattr(self, 'intent_learning') else 0,
-                    "queue_size": len(self.learning_queue) if hasattr(self, 'learning_queue') else 0
+                    "queue_size": self.get_queue_size()
                 },
                 "autonomous_features": {
                     "pattern_discovery": (
@@ -1028,16 +1046,50 @@ class LearningManager:
     async def _process_learning_queue(self):
         """Process pending learning updates"""
         try:
-            while self.learning_queue:
-                item = self.learning_queue.pop(0)
-                if item["type"] == "pattern":
-                    await self._update_pattern(item["data"])
-                elif item["type"] == "weight":
-                    await self._update_weight(item["data"])
-                elif item["type"] == "context":
-                    await self._update_context(item["data"])
+            self.is_processing = True
+            while not self.learning_queue.empty():
+                item = await self.learning_queue.get()
+                try:
+                    if item["type"] == "pattern":
+                        await self._update_pattern(item["data"])
+                    elif item["type"] == "weight":
+                        await self._update_weight(item["data"])
+                    elif item["type"] == "context":
+                        await self._update_context(item["data"])
+                    
+                    # Mark task as done
+                    self.learning_queue.task_done()
+                    
+                except Exception as e:
+                    print(f"Error processing queue item: {e}")
+                    
         except Exception as e:
             print(f"Error processing learning queue: {e}")
+        finally:
+            self.is_processing = False
+    
+    async def add_to_queue(self, item_type: str, data: Dict):
+        """Add item to learning queue"""
+        try:
+            await self.learning_queue.put({
+                "type": item_type,
+                "data": data,
+                "timestamp": datetime.now().isoformat()
+            })
+        except Exception as e:
+            print(f"Error adding to learning queue: {e}")
+    
+    def get_queue_size(self) -> int:
+        """Get current queue size safely"""
+        try:
+            if isinstance(self.learning_queue, asyncio.Queue):
+                return self.learning_queue.qsize()
+            elif isinstance(self.learning_queue, list):
+                return len(self.learning_queue)
+            return 0
+        except NotImplementedError:
+            # Some platforms don't support qsize()
+            return 0
     
     async def _discover_patterns(self):
         """Discover new patterns from recent interactions"""
@@ -1069,3 +1121,7 @@ class LearningManager:
                         data[pattern] = max(0.1, min(1.0, new_weight))
         except Exception as e:
             print(f"Error adjusting weights: {e}")
+    
+    def set_conversation_state(self, in_conversation: bool):
+        """Update conversation state"""
+        self.in_conversation = in_conversation

@@ -215,12 +215,19 @@ class MessiAssistant:
     async def on_wake_word(self, audio_data: bytes):
         """Handle wake word detection with user context"""
         try:
+            # Set conversation state
+            self.in_conversation = True
+            if self.learning_manager:
+                self.learning_manager.set_conversation_state(True)
+            
             # Process speech to text
             text = await self.speech.process_audio(audio_data)
             
             if not text:
                 print("No speech detected")
                 self.in_conversation = False
+                if self.learning_manager:
+                    self.learning_manager.set_conversation_state(False)
                 return
                 
             print(f"\n✓ Recognized Text ({len(text)} chars):")
@@ -245,10 +252,17 @@ class MessiAssistant:
             else:
                 print("No response generated")
             
+            # Reset conversation state
+            self.in_conversation = False
+            if self.learning_manager:
+                self.learning_manager.set_conversation_state(False)
+            
         except Exception as e:
             print(f"Error processing wake word: {e}")
             traceback.print_exc()
             self.in_conversation = False
+            if self.learning_manager:
+                self.learning_manager.set_conversation_state(False)
 
     async def stop(self):
         """Stop the assistant"""
