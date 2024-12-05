@@ -3,7 +3,7 @@ from openai import AsyncOpenAI
 from ...config import Settings
 import random
 
-class Tutor:
+class TutorSkill:
     def __init__(self):
         self.settings = Settings()
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)

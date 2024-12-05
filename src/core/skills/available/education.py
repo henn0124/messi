@@ -31,11 +31,11 @@ Key Features:
    - Maintains learning flow
 
 Usage:
-    education = Education()
+    education = EducationSkill()
     response = await education.handle(text, context)
 """
 
-class Education:
+class EducationSkill:
     def __init__(self):
         self.settings = Settings()
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
@@ -45,7 +45,12 @@ class Education:
     async def handle(self, text: str, context_info: Dict) -> Dict:
         """Handle educational queries with better context awareness"""
         try:
+            print("\nEducation Skill Processing:")
+            print(f"Question: {text}")
+            print(f"Context: {context_info}")
+            
             # Generate response
+            print("\nGenerating response...")
             response = await self.client.chat.completions.create(
                 model=self.settings.OPENAI_CHAT_MODEL,
                 messages=[
@@ -54,6 +59,7 @@ class Education:
                     Provide clear, engaging answers that encourage learning.
                     Use examples and analogies when helpful.
                     End with a gentle prompt for follow-up questions.
+                    Keep responses concise but informative.
                     """},
                     {"role": "user", "content": text}
                 ],
@@ -62,6 +68,7 @@ class Education:
             )
             
             answer = response.choices[0].message.content.strip()
+            print(f"\nGenerated answer: {answer}")
             
             # Store in context
             self.conversation_context.append({
@@ -83,7 +90,7 @@ class Education:
             }
             
         except Exception as e:
-            print(f"Error in education handler: {e}")
+            print(f"\n❌ Error in education handler: {e}")
             return {
                 "text": "I'm having trouble understanding. Could you rephrase your question?",
                 "context": "education",

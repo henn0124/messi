@@ -4,10 +4,10 @@ Available Skills for Messi Assistant
 
 Core Skills:
 1. BedtimeStory - Interactive storytelling
-2. Education - Educational responses
+2. EducationSkill - Educational responses
 3. Timer - Time management
-4. Conversation - General chat
-5. Tutor - Specific learning assistance
+4. ConversationSkill - General chat
+5. TutorSkill - Specific learning assistance
 
 Each skill should provide:
 - skill_manifest
@@ -16,15 +16,15 @@ Each skill should provide:
 """
 
 from .bedtime_story import BedtimeStory
-from .education import Education
+from .education import EducationSkill
 from .timer import Timer
-from .conversation import Conversation
-from .tutor import Tutor
+from .conversation import ConversationSkill
+from .tutor import TutorSkill
 
 __all__ = [
     'BedtimeStory',
-    'Education',
+    'EducationSkill',
     'Timer',
-    'Conversation',
-    'Tutor'
+    'ConversationSkill',
+    'TutorSkill'
 ]

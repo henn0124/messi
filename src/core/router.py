@@ -4,12 +4,18 @@ import logging
 import json
 from pathlib import Path
 from datetime import datetime
+from .skills.available.education import EducationSkill
+from .skills.available.conversation import ConversationSkill
 
 class Router:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.context = self.settings.router["default_context"]
         self.history = []
+        
+        # Initialize skills
+        self.education_skill = EducationSkill()
+        self.conversation_skill = ConversationSkill()
         
         # Setup persistent storage
         self.storage_dir = Path(self.settings.CACHE_DIR) / "context"
@@ -74,7 +80,7 @@ class Router:
         self.context = self.settings.router["default_context"]
         self._save_context()
         
-    def route_intent(self, intent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def route_intent(self, intent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Route intent to appropriate handler"""
         try:
             # Add to history
@@ -85,12 +91,12 @@ class Router:
             
             # Basic routing based on context
             if context == "general":
-                return self._handle_general(intent)
+                return await self._handle_general(intent)
             elif context == "help":
-                return self._handle_help(intent)
+                return await self._handle_help(intent)
             else:
                 logging.warning(f"Unknown context: {context}")
-                return self._handle_general(intent)
+                return await self._handle_general(intent)
                 
         except Exception as e:
             logging.error(f"Error routing intent: {e}")
@@ -99,7 +105,7 @@ class Router:
                 "context": self.settings.router["fallback_context"]
             }
             
-    def _handle_general(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_general(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         """Handle general conversation with context awareness"""
         # Extract question from intent
         question = intent.get("text", "").strip()
@@ -116,6 +122,9 @@ class Router:
             if "text" in past_intent:
                 recent_context.append(past_intent["text"])
         
+        # Get conversation context
+        context_info = self._get_conversation_context()
+        
         # Detect factual/educational questions
         educational_indicators = [
             "what is", "what's", "where is", "who is", "when did",
@@ -126,30 +135,53 @@ class Router:
         
         # Check if this is an educational question
         if any(indicator in question.lower() for indicator in educational_indicators):
-            return {
-                "response": question,
-                "context": "education",
-                "subject": "factual_question",
-                "auto_continue": True
-            }
+            # Route to education skill
+            try:
+                response = await self.education_skill.handle(question, context_info)
+                return {
+                    "response": response["text"],
+                    "context": "education",
+                    "subject": "factual_question"
+                }
+            except Exception as e:
+                logging.error(f"Error in education skill: {e}")
+                return {
+                    "response": "I apologize, but I'm having trouble processing that educational question. Could you try rephrasing it?",
+                    "context": "education"
+                }
         
         # Handle follow-up questions
         if question.lower().startswith(("what else", "tell me more", "and")):
             if self.context == "education":
-                return {
-                    "response": question,
-                    "context": "education",
-                    "subject": "follow_up",
-                    "auto_continue": True
-                }
+                try:
+                    response = await self.education_skill.handle(question, context_info)
+                    return {
+                        "response": response["text"],
+                        "context": "education",
+                        "subject": "follow_up"
+                    }
+                except Exception as e:
+                    logging.error(f"Error handling follow-up: {e}")
+                    return {
+                        "response": "I'm having trouble with that follow-up question. Could you ask it in a different way?",
+                        "context": "education"
+                    }
         
-        # If no special handling, treat as general conversation
-        return {
-            "response": question,
-            "context": "conversation"
-        }
+        # If no special handling, route to conversation skill
+        try:
+            response = await self.conversation_skill.handle(question, context_info)
+            return {
+                "response": response["text"],
+                "context": "conversation"
+            }
+        except Exception as e:
+            logging.error(f"Error in conversation skill: {e}")
+            return {
+                "response": "I'm having trouble with our conversation. Let's try a different topic.",
+                "context": "conversation"
+            }
         
-    def _handle_help(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_help(self, intent: Dict[str, Any]) -> Dict[str, Any]:
         """Handle help requests"""
         return {
             "response": "I can help answer questions and have conversations. Try asking me about facts, " +

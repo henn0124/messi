@@ -50,9 +50,13 @@ class LearningManager:
         # Initialize components
         self.context_manager = None
         
-        # Initialize patterns dict
+        # Initialize patterns with seed data
         self.patterns = {
-            "context_transitions": {},
+            "context_transitions": {
+                "education": {"story": 0.7, "conversation": 0.6},
+                "story": {"education": 0.7, "conversation": 0.5},
+                "conversation": {"education": 0.6, "story": 0.5}
+            },
             "topic_relationships": {},
             "engagement_patterns": {},
             "conversation_flows": {}
@@ -75,12 +79,11 @@ class LearningManager:
             self.learning_file.parent.mkdir(parents=True, exist_ok=True)
             self.config_file.parent.mkdir(parents=True, exist_ok=True)
             
-            # Initialize data
-            self._initialize_learning_data()
+            # Initialize learning components
+            self._initialize_learning_components()
             
-            # Update metrics from learning data
-            if hasattr(self, 'learning_data'):
-                self.metrics.update(self.learning_data.get("metrics", {}))
+            # Start autonomous learning tasks
+            asyncio.create_task(self._autonomous_learning_loop())
             
             print(f"Learning system initialized with data at: {self.learning_file}")
         else:
@@ -955,3 +958,114 @@ class LearningManager:
         except Exception as e:
             print(f"Error loading learning config: {e}")
             return {}
+    
+    def _initialize_learning_components(self):
+        """Initialize learning system components"""
+        try:
+            # Initialize intent learning with seed patterns
+            self.intent_learning = {
+                "patterns": {},
+                "success_rates": {},
+                "weights": self.learning_config["context_weights"]
+            }
+            
+            # Initialize pattern discovery
+            self.pattern_discovery = {
+                "active": True,
+                "min_confidence": self.learning_config["pattern_learning"]["min_confidence"],
+                "min_occurrences": self.learning_config["pattern_learning"]["min_occurrences"],
+                "success_threshold": self.learning_config["pattern_learning"]["success_threshold"]
+            }
+            
+            # Initialize weight adjustment
+            self.weight_adjustment = {
+                "active": True,
+                "learning_rate": self.learning_config["parameters"]["learning_rate"],
+                "decay_factor": self.learning_config["parameters"]["decay_factor"]
+            }
+            
+            # Initialize learning queue
+            self.learning_queue = []
+            
+            # Load initial data
+            self._initialize_learning_data()
+            
+        except Exception as e:
+            print(f"Error initializing learning components: {e}")
+    
+    async def _autonomous_learning_loop(self):
+        """Main loop for autonomous learning"""
+        while True:
+            try:
+                if not self.learning_enabled:
+                    await asyncio.sleep(60)
+                    continue
+                    
+                # Process learning queue
+                await self._process_learning_queue()
+                
+                # Discover new patterns
+                if self.pattern_discovery["active"]:
+                    await self._discover_patterns()
+                
+                # Adjust weights
+                if self.weight_adjustment["active"]:
+                    await self._adjust_weights()
+                
+                # Update configuration
+                await self._update_dynamic_config()
+                
+                # Save learning data
+                await self._save_learning_data()
+                
+                # Wait for next cycle
+                await asyncio.sleep(self.learning_config["parameters"]["update_frequency"])
+                
+            except Exception as e:
+                print(f"Error in autonomous learning loop: {e}")
+                await asyncio.sleep(300)  # Retry in 5 minutes
+    
+    async def _process_learning_queue(self):
+        """Process pending learning updates"""
+        try:
+            while self.learning_queue:
+                item = self.learning_queue.pop(0)
+                if item["type"] == "pattern":
+                    await self._update_pattern(item["data"])
+                elif item["type"] == "weight":
+                    await self._update_weight(item["data"])
+                elif item["type"] == "context":
+                    await self._update_context(item["data"])
+        except Exception as e:
+            print(f"Error processing learning queue: {e}")
+    
+    async def _discover_patterns(self):
+        """Discover new patterns from recent interactions"""
+        try:
+            for intent, data in self.intent_learning["patterns"].items():
+                # Find patterns meeting criteria
+                new_patterns = self._find_new_patterns(intent)
+                if new_patterns:
+                    print(f"Discovered {len(new_patterns)} new patterns for {intent}")
+                    self.intent_learning["patterns"][intent].update(new_patterns)
+        except Exception as e:
+            print(f"Error discovering patterns: {e}")
+    
+    async def _adjust_weights(self):
+        """Adjust weights based on performance"""
+        try:
+            for intent, data in self.intent_learning["patterns"].items():
+                if "success_rates" in self.intent_learning:
+                    success_rate = self.intent_learning["success_rates"].get(intent, {}).get("rate", 0.5)
+                    
+                    # Adjust weights based on success
+                    learning_rate = self.weight_adjustment["learning_rate"]
+                    for pattern in data:
+                        current_weight = data[pattern]
+                        if success_rate > self.pattern_discovery["success_threshold"]:
+                            new_weight = current_weight + (learning_rate * (1 - current_weight))
+                        else:
+                            new_weight = current_weight * self.weight_adjustment["decay_factor"]
+                        data[pattern] = max(0.1, min(1.0, new_weight))
+        except Exception as e:
+            print(f"Error adjusting weights: {e}")

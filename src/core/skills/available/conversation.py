@@ -3,7 +3,7 @@ from openai import AsyncOpenAI
 from ...config import Settings
 import time
 
-class Conversation:
+class ConversationSkill:
     def __init__(self):
         self.settings = Settings()
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)

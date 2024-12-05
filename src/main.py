@@ -75,23 +75,31 @@ class ResourceMonitor:
 
 class MessiAssistant:
     def __init__(self):
+        print("\nInitializing Messi Assistant...")
+        
         # Initialize settings
+        print("Loading settings...")
         self.settings = Settings()
         
         # Initialize logger first
+        print("Initializing logger...")
         self.logger = ConversationLogger()
         
         # Initialize user management
+        print("Initializing user management...")
         self.user_manager = UserManager(settings=self.settings, logger=self.logger)
         
         # Initialize router
+        print("Initializing router...")
         self.router = Router(settings=self.settings)
         
         # Initialize speech components
+        print("Initializing speech components...")
         self.speech = SpeechManager()
         self.tts = TextToSpeech()
         
         # Initialize learning system
+        print("Initializing learning system...")
         self.learning_manager = LearningManager() if self.settings.learning.enabled else None
         
         # Initialize audio and wake word detector last
@@ -102,31 +110,46 @@ class MessiAssistant:
         self.in_conversation = False
         self.current_user = None
         self.running = False
+        
+        print("✓ Basic initialization complete")
 
     async def initialize(self):
         """Initialize async components"""
         try:
+            print("\nInitializing async components...")
+            
             # Initialize audio interface
+            print("Initializing audio interface...")
             from core.audio import AudioInterface
             self.audio = AudioInterface()
             if not await self.audio.initialize():
                 raise RuntimeError("Failed to initialize audio interface")
+            print("✓ Audio interface initialized")
             
             # Initialize wake word detector
+            print("Initializing wake word detector...")
             from core.wake_word import WakeWordDetector
             self.wake_word_detector = WakeWordDetector(settings=self.settings)
+            print("✓ Wake word detector initialized")
             
+            # Initialize learning system
+            if self.learning_manager:
+                print("Initializing learning system...")
+                await self.learning_manager.initialize()
+                print("✓ Learning system initialized")
+            
+            print("✓ All async components initialized successfully")
             return True
             
         except Exception as e:
-            print(f"Error during initialization: {e}")
+            print(f"\n❌ Error during initialization: {e}")
             traceback.print_exc()
             return False
 
     async def start(self):
         """Start the assistant"""
         try:
-            print("\nStarting Messi Assistant...")
+            print("\n🚀 Starting Messi Assistant...")
             
             # Initialize components
             if not await self.initialize():
@@ -137,9 +160,7 @@ class MessiAssistant:
             
             # Initialize and validate learning system
             if self.learning_manager:
-                await self.learning_manager.initialize()
-                
-                # Validate learning system
+                print("\nValidating learning system...")
                 validation = await self.learning_manager.validate_learning_system()
                 
                 print("\nLearning System Validation:")
@@ -167,13 +188,15 @@ class MessiAssistant:
             
             # Start wake word detection if everything is initialized
             if self.audio and self.wake_word_detector:
+                print("\nStarting wake word detection...")
                 await self.audio.start_wake_word_detection(self.on_wake_word)
-                print("\nListening for wake word...")
+                print("\n👂 Listening for wake word...")
             else:
                 print("❌ Cannot start wake word detection - components not initialized!")
                 return
             
             # Keep running until stopped
+            print("\n✨ Assistant is ready!")
             while self.running:
                 # Process learning queue during idle time
                 if (self.learning_manager and 
@@ -184,7 +207,7 @@ class MessiAssistant:
                 await asyncio.sleep(0.1)
                 
         except Exception as e:
-            print(f"Error starting assistant: {e}")
+            print(f"\n❌ Error starting assistant: {e}")
             traceback.print_exc()
         finally:
             await self.stop()
@@ -211,7 +234,7 @@ class MessiAssistant:
             }
             
             # Route intent
-            response = self.router.route_intent(intent)
+            response = await self.router.route_intent(intent)
             
             if response:
                 # Generate and play response
@@ -243,8 +266,20 @@ class MessiAssistant:
 
 async def main():
     """Main entry point"""
-    assistant = MessiAssistant()
-    await assistant.start()
+    print("\n🚀 Starting Messi Assistant...")
+    
+    try:
+        # Initialize assistant
+        print("\nInitializing components...")
+        assistant = MessiAssistant()
+        
+        # Start assistant
+        print("\nStarting assistant...")
+        await assistant.start()
+        
+    except Exception as e:
+        print(f"\n❌ Fatal error: {e}")
+        traceback.print_exc()
 
 if __name__ == "__main__":
     asyncio.run(main()) 
