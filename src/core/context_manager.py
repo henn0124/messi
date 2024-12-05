@@ -64,56 +64,67 @@ class ContextManager:
         self.context_file = Path("cache/context.json")
         self.auto_save = True
         
-        # Context relationships
-        self.context_transitions = {
-            "france": {
-                "related": ["french_food", "french_culture", "paris"],
-                "entities": ["france", "paris", "french"],
-                "topics": ["cuisine", "culture", "travel"]
-            },
-            "food": {
-                "related": ["cuisine", "restaurants", "chefs"],
-                "entities": ["restaurant", "food", "meal"],
-                "topics": ["cooking", "dining", "recipes"]
-            },
-            # Add more context definitions
-        }
+        # Initialize learning components
+        self._initialize_learning_components()
         
         # Load persistent data
         self._load_persistent_context()
-        
-        # Core context types
+    
+    def _initialize_learning_components(self):
+        """Initialize learning system components"""
+        # Core context types with learning weights
         self.context_types = {
             "education": {
                 "related": ["learning", "questions", "facts"],
                 "entities": ["topics", "concepts", "facts"],
-                "transitions": ["story", "conversation"]
+                "transitions": ["story", "conversation"],
+                "weights": {"confidence": 0.7, "engagement": 0.8}
             },
             "story": {
                 "related": ["narrative", "characters", "plot"],
                 "entities": ["characters", "settings", "events"],
-                "transitions": ["education", "conversation"]
+                "transitions": ["education", "conversation"],
+                "weights": {"confidence": 0.6, "engagement": 0.7}
             },
             "conversation": {
                 "related": ["chat", "discussion", "dialogue"],
                 "entities": ["topics", "participants", "mood"],
-                "transitions": ["education", "story"]
+                "transitions": ["education", "story"],
+                "weights": {"confidence": 0.6, "engagement": 0.6}
             }
         }
         
-        # Skill-specific context handlers
-        self.context_handlers = {
-            "education": self._handle_education_context,
-            "story": self._handle_story_context,
-            "conversation": self._handle_conversation_context
+        # Initialize context transitions with weights
+        self.context_transitions = {
+            "education": {
+                "conversation": 0.6,
+                "story": 0.7
+            },
+            "conversation": {
+                "education": 0.6,
+                "story": 0.5
+            },
+            "story": {
+                "education": 0.7,
+                "conversation": 0.5
+            }
         }
         
-        # Add weights tracking
+        # Initialize topic relationships
+        self.topic_relationships = {}
+        
+        # Add weights tracking with learning parameters
         self.weights = {
             "previous_context": 0.4,
             "current_entities": 0.3,
-            "user_engagement": 0.3
+            "user_engagement": 0.3,
+            "learning_rate": 0.1,
+            "decay_factor": 0.95
         }
+        
+        # Enable autonomous learning
+        if self.learning_enabled and self.learning_manager:
+            self.learning_manager.register_context_manager(self)
     
     async def initialize(self):
         """Initialize async components of the context manager"""

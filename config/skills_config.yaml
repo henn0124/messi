@@ -4,8 +4,6 @@
 
 intents:
   # Base confidence scores for each intent type
-  # These scores are applied before any pattern matching
-  # Higher base scores make an intent more likely to be selected
   base_scores:
     story: 0.0        # No inherent bias
     education: 0.5    # Slight bias towards educational responses
@@ -13,11 +11,7 @@ intents:
     timer: 0.0        # No inherent bias
     conversation: 0.3 # Small bias to favor conversation when ambiguous
 
-  # Weights for pattern matching
-  # These multiply the pattern match score
-  # Higher weights make pattern matches more significant
-  # Example: If timer weight is 2.0 and a timer pattern is matched,
-  # the final score increase will be 2.0
+  # Pattern matching weights
   weights:
     conversation: 1.5  # Moderate boost for conversation markers
     timer: 2.0        # Strong boost - timer requests should be precise
@@ -45,8 +39,6 @@ intents:
         - "conversation"
       description: "General conversation and chat interactions"
       fallback: true  # Used when no strong match is found
-      # Weight calculation: base_score (0.3) + matched_pattern * weight (1.5)
-      # Example: "let's chat" -> 0.3 + 1 * 1.5 = 1.8 total score
 
     timer:
       keywords:
@@ -61,8 +53,6 @@ intents:
         - "countdown"
       description: "Timer and reminder functionality"
       requires_params: true  # Needs duration parameter
-      # Weight calculation: base_score (0.0) + matched_pattern * weight (2.0)
-      # Example: "set timer" -> 0.0 + 1 * 2.0 = 2.0 total score
 
     education:
       keywords:
@@ -83,8 +73,6 @@ intents:
         - "example"
       description: "Educational queries and explanations"
       default: true  # Used when no clear intent is detected
-      # Weight calculation: base_score (0.5) + matched_pattern * weight (1.5)
-      # Example: "what is" -> 0.5 + 1 * 1.5 = 2.0 total score
 
     story:
       keywords:
@@ -98,19 +86,14 @@ intents:
         - "book"
       description: "Storytelling and narrative content"
       requires_context: true  # Uses conversation history
-      # Weight calculation: base_score (0.0) + matched_pattern * weight (1.5)
-      # Example: "tell story" -> 0.0 + 1 * 1.5 = 1.5 total score
 
   # Intent detection thresholds
   thresholds:
     min_confidence: 0.5    # Minimum score to consider intent valid
     context_bonus: 1.0     # Added to score if matches current context
-    learning_rate: 0.1     # How quickly weights adapt from feedback
-    max_patterns: 20       # Maximum patterns to track per intent
 
   # Intent transitions
-  # Defines which intents can naturally flow into others
-  # Used for maintaining conversation coherence
+  # Defines allowed transitions between intents
   transitions:
     education:
       - story           # Can transition to story examples

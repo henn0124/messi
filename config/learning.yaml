@@ -1,0 +1,63 @@
+# Learning System Configuration
+
+# Core Learning Parameters
+parameters:
+  learning_rate: 0.1
+  decay_factor: 0.95
+  update_frequency: 3600  # seconds
+  min_samples: 10
+  max_patterns: 100
+
+# Context Learning
+context_learning:
+  education:
+    weights:
+      confidence: 0.7
+      engagement: 0.8
+    transitions:
+      story: 0.7
+      conversation: 0.6
+  
+  story:
+    weights:
+      confidence: 0.6
+      engagement: 0.7
+    transitions:
+      education: 0.7
+      conversation: 0.5
+  
+  conversation:
+    weights:
+      confidence: 0.6
+      engagement: 0.6
+    transitions:
+      education: 0.6
+      story: 0.5
+
+# Base Context Weights
+context_weights:
+  previous_context: 0.4
+  current_entities: 0.3
+  user_engagement: 0.3
+
+# Pattern Learning Thresholds
+pattern_learning:
+  min_confidence: 0.5
+  min_occurrences: 3
+  success_threshold: 0.7
+  max_patterns_per_intent: 20
+
+# Topic Learning
+topic_learning:
+  initial_weight: 0.5
+  min_weight: 0.1
+  max_weight: 1.0
+  context_bonus: 1.0
+
+# Learning Storage
+storage:
+  data_path: "cache/learning/learning.json"
+  config_path: "config/dynamic_config.yaml"
+  backup_count: 5
+  auto_save: true
+  save_interval: 300  # seconds 

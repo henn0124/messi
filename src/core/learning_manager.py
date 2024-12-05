@@ -44,8 +44,11 @@ class LearningManager:
         self.settings = Settings()
         self.learning_enabled = self.settings.learning.enabled
         
+        # Load learning config
+        self.learning_config = self._load_learning_config()
+        
         # Initialize components
-        self.context_manager = None  # Will be set by MessiAssistant
+        self.context_manager = None
         
         # Initialize patterns dict
         self.patterns = {
@@ -64,9 +67,9 @@ class LearningManager:
         }
         
         if self.learning_enabled:
-            # Get paths from settings
-            self.learning_file = Path(self.settings.learning.storage["data_path"])
-            self.config_file = Path(self.settings.learning.storage["config_path"])
+            # Get paths from learning config
+            self.learning_file = Path(self.learning_config["storage"]["data_path"])
+            self.config_file = Path(self.learning_config["storage"]["config_path"])
             
             # Create directories
             self.learning_file.parent.mkdir(parents=True, exist_ok=True)
@@ -421,24 +424,20 @@ class LearningManager:
                 with open(self.learning_file, 'r') as f:
                     saved_data = json.load(f)
                     
-                    # Restore intent learning data with default weights
+                    # Restore intent learning data with config weights
                     if "intent_learning" not in saved_data:
                         saved_data["intent_learning"] = {
                             "patterns": {},
                             "success_rates": {},
-                            "weights": {
-                                "previous_context": 0.4,
-                                "current_entities": 0.3,
-                                "user_engagement": 0.3
-                            }
+                            "weights": self.learning_config["base_weights"]
                         }
                     self.intent_learning = saved_data["intent_learning"]
                     
-                    # Restore weights with defaults
+                    # Restore weights from config
                     if "weights" not in saved_data:
                         saved_data["weights"] = {
-                            "context": {"education": 0.7, "conversation": 0.6},
-                            "patterns": {"base_confidence": 0.5},
+                            "context": self.learning_config["context_types"],
+                            "patterns": {"base_confidence": self.learning_config["patterns"]["min_confidence"]},
                             "last_updated": datetime.now().isoformat()
                         }
                     self.weights = saved_data["weights"]
@@ -846,3 +845,113 @@ class LearningManager:
         except Exception as e:
             print(f"Error validating learning system: {e}")
             return validation
+    
+    def register_context_manager(self, context_manager):
+        """Register context manager for learning integration"""
+        self.context_manager = context_manager
+        print("Context manager registered with learning system")
+        
+        # Initialize context learning
+        if not hasattr(self, 'context_learning'):
+            self.context_learning = {
+                "patterns": {},
+                "transitions": {},
+                "weights": {},
+                "last_updated": datetime.now().isoformat()
+            }
+        
+        # Update validation status
+        self._validate_learning_components()
+    
+    def _validate_learning_components(self):
+        """Validate learning system components"""
+        try:
+            validation = {
+                "components": {
+                    "intent_learning": hasattr(self, 'intent_learning'),
+                    "pattern_learning": hasattr(self, 'patterns'),
+                    "context_learning": hasattr(self, 'context_learning'),
+                    "queue_processing": hasattr(self, 'learning_queue')
+                },
+                "files": {
+                    "learning_data": self.learning_file.exists(),
+                    "dynamic_config": self.config_file.exists()
+                },
+                "metrics": {
+                    "patterns_count": sum(len(p) for p in self.intent_learning["patterns"].values()) if hasattr(self, 'intent_learning') else 0,
+                    "success_rates_count": len(self.intent_learning.get("success_rates", {})) if hasattr(self, 'intent_learning') else 0,
+                    "queue_size": len(self.learning_queue) if hasattr(self, 'learning_queue') else 0
+                },
+                "autonomous_features": {
+                    "pattern_discovery": (
+                        hasattr(self, 'patterns') and
+                        len(self.patterns.get("context_transitions", {})) > 0
+                    ),
+                    "weight_adjustment": (
+                        hasattr(self, 'weights') and
+                        len(self.weights.get("context", {})) > 0
+                    ),
+                    "context_optimization": (
+                        hasattr(self, 'context_learning') and
+                        len(self.context_learning.get("patterns", {})) > 0
+                    )
+                }
+            }
+            
+            # Print validation summary
+            print("\nLearning System Validation:")
+            print("Components:")
+            for component, status in validation["components"].items():
+                print(f"  {component}: {'✓' if status else '✗'}")
+            
+            print("\nFiles:")
+            for file, status in validation["files"].items():
+                print(f"  {file}: {'✓' if status else '✗'}")
+            
+            print("\nMetrics:")
+            for metric, value in validation["metrics"].items():
+                print(f"  {metric}: {value}")
+            
+            print("\nAutonomous Features:")
+            for feature, status in validation["autonomous_features"].items():
+                print(f"  {feature}: {'✓' if status else '✗'}")
+            
+            if not all(validation["autonomous_features"].values()):
+                print("\nSystem is not fully autonomous")
+            else:
+                print("\nSystem is fully autonomous")
+                
+            return validation
+            
+        except Exception as e:
+            print(f"Error validating learning components: {e}")
+            return {}
+    
+    def _load_learning_config(self) -> Dict:
+        """Load learning configuration from YAML"""
+        try:
+            config_path = Path("config/learning.yaml")
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    return yaml.safe_load(f)
+            else:
+                print("Learning config not found, using defaults")
+                return {
+                    "parameters": {
+                        "learning_rate": 0.1,
+                        "decay_factor": 0.95,
+                        "update_frequency": 3600,
+                        "min_samples": 10,
+                        "max_patterns": 100
+                    },
+                    "storage": {
+                        "data_path": "cache/learning/learning.json",
+                        "config_path": "config/dynamic_config.yaml",
+                        "backup_count": 5,
+                        "auto_save": True,
+                        "save_interval": 300
+                    }
+                }
+        except Exception as e:
+            print(f"Error loading learning config: {e}")
+            return {}
