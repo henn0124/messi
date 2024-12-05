@@ -13,7 +13,7 @@ models:
 audio:
   input:
     # ALSA device settings
-    device: "hw:CARD=Device_1,DEV=0"    # TONOR TM20 Audio Device (Card 4)
+    device: "plughw:CARD=Device_1,DEV=0"    # TONOR TM20 Audio Device
     format: "S16_LE"                    # 16-bit signed little-endian
     rate: 48000                         # Sample rate (48kHz)
     channels: 1                         # Mono input

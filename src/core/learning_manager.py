@@ -47,6 +47,13 @@ class LearningManager:
         # Load learning config
         self.learning_config = self._load_learning_config()
         
+        # Initialize learning data
+        self.learning_data = {
+            "patterns": {},
+            "metrics": {},
+            "last_update": datetime.now().isoformat()
+        }
+        
         # Initialize components
         self.context_manager = None
         
@@ -428,28 +435,28 @@ class LearningManager:
         except Exception as e:
             print(f"Error getting metrics: {e}")
     
-    def _initialize_learning_data(self):
+    async def _initialize_learning_data(self):
         """Initialize or load learning data"""
         try:
             # Try to load existing data
             if self.learning_file.exists():
-                with open(self.learning_file, 'r') as f:
-                    saved_data = json.load(f)
+                async with aiofiles.open(self.learning_file, 'r') as f:
+                    saved_data = json.loads(await f.read())
                     
                     # Restore intent learning data with config weights
                     if "intent_learning" not in saved_data:
                         saved_data["intent_learning"] = {
                             "patterns": {},
                             "success_rates": {},
-                            "weights": self.learning_config["base_weights"]
+                            "weights": self.learning_config["context_weights"]
                         }
                     self.intent_learning = saved_data["intent_learning"]
                     
                     # Restore weights from config
                     if "weights" not in saved_data:
                         saved_data["weights"] = {
-                            "context": self.learning_config["context_types"],
-                            "patterns": {"base_confidence": self.learning_config["patterns"]["min_confidence"]},
+                            "context": self.learning_config["context_learning"],
+                            "patterns": {"base_confidence": self.learning_config["pattern_learning"]["min_confidence"]},
                             "last_updated": datetime.now().isoformat()
                         }
                     self.weights = saved_data["weights"]
@@ -458,75 +465,37 @@ class LearningManager:
                     self.learning_data = saved_data
             else:
                 # Create new learning data structure
-                self._create_initial_learning_data()
+                await self._create_initial_learning_data()
                 
             print(f"Loaded learning data with {len(self.intent_learning['patterns'])} patterns")
             
         except Exception as e:
             print(f"Error loading learning data: {e}")
-            self._create_initial_learning_data()
+            await self._create_initial_learning_data()
     
-    def _create_initial_learning_data(self):
-        """Create initial learning data structure with all skills"""
+    async def _create_initial_learning_data(self):
+        """Create initial learning data structure"""
         try:
-            # Load skills config to get all patterns
-            with open("config/skills_config.yaml") as f:
-                skills_config = yaml.safe_load(f)
-            
-            # Initialize patterns for each skill
-            initial_patterns = {}
-            for intent, config in skills_config["intents"]["patterns"].items():
-                initial_patterns[intent] = {
-                    keyword: 0.5  # Start with neutral weight
-                    for keyword in config["keywords"]
-                }
-            
             self.learning_data = {
                 "version": "1.0",
                 "last_updated": datetime.now().isoformat(),
                 "intent_learning": {
-                    "patterns": initial_patterns,
-                    "success_rates": {
-                        intent: {
-                            "successes": 0,
-                            "total": 0,
-                            "recent_success": 0.0
-                        }
-                        for intent in skills_config["intents"]["patterns"].keys()
-                    },
-                    "transitions": {
-                        source: {
-                            target: 0.5
-                            for target in transitions
-                        }
-                        for source, transitions in skills_config["intents"]["transitions"].items()
-                    }
+                    "patterns": {},
+                    "success_rates": {},
+                    "weights": self.learning_config["context_weights"]
                 },
                 "weights": {
-                    "patterns": {
-                        intent: skills_config["intents"]["weights"].get(intent, 0.5)
-                        for intent in skills_config["intents"]["patterns"].keys()
-                    },
-                    "context": {
-                        "previous_context": 0.4,
-                        "current_entities": 0.3,
-                        "user_engagement": 0.3
-                    },
+                    "context": self.learning_config["context_learning"],
+                    "patterns": {"base_confidence": self.learning_config["pattern_learning"]["min_confidence"]},
                     "last_updated": datetime.now().isoformat()
                 }
             }
             
             # Save initial data
-            self.learning_file.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.learning_file, 'w') as f:
-                json.dump(self.learning_data, f, indent=2)
-                
-            print(f"Created new learning data with {len(initial_patterns)} skills")
+            await self._save_learning_data()
             
         except Exception as e:
             print(f"Error creating initial learning data: {e}")
-            # Create minimal structure if config load fails
-            self._create_minimal_learning_data()
     
     def _create_minimal_learning_data(self):
         """Create minimal learning data structure"""
@@ -977,7 +946,7 @@ class LearningManager:
             print(f"Error loading learning config: {e}")
             return {}
     
-    def _initialize_learning_components(self):
+    async def _initialize_learning_components(self):
         """Initialize learning system components"""
         try:
             # Initialize intent learning with seed patterns
@@ -1003,13 +972,17 @@ class LearningManager:
             }
             
             # Initialize learning queue
-            self.learning_queue = []
+            self.learning_queue = asyncio.Queue()
             
             # Load initial data
-            self._initialize_learning_data()
+            await self._initialize_learning_data()
+            
+            print("Learning system components initialized")
+            return True
             
         except Exception as e:
             print(f"Error initializing learning components: {e}")
+            return False
     
     async def _autonomous_learning_loop(self):
         """Main loop for autonomous learning"""
