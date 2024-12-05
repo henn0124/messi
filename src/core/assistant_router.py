@@ -75,10 +75,32 @@ class AssistantRouter:
     def __init__(self):
         self.settings = Settings()
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
+        
+        # Initialize managers
         self.context_manager = ContextManager(None)  # Initialize without learning manager for now
         self.logger = ConversationLogger()
         self.skill_manager = SkillManager()
         self.skills = self.skill_manager.skills
+        
+        # Start with education context
+        self.context_manager.start_conversation("education")
+        
+        # Initialize conversation state
+        self.current_context = {
+            "current": "education",
+            "history": [],
+            "entities": {
+                "current": [],
+                "global": []
+            },
+            "topics": [],
+            "conversation": {
+                "active": True,
+                "duration": 0,
+                "turns": 0
+            },
+            "skill_specific": {}
+        }
         
     async def route_request(self, text: str) -> Dict:
         """Route request to appropriate skill with better error handling"""

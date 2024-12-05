@@ -32,6 +32,25 @@ class Settings(BaseSettings):
     # Add raw audio config
     audio: Dict = Field(default_factory=dict)
     
+    # Add router config
+    router: Dict = Field(default_factory=lambda: {
+        "default_context": "general",
+        "fallback_context": "help",
+        "max_history": 10
+    })
+    
+    # Add wake word config
+    wake_word: Dict = Field(default_factory=lambda: {
+        "name": "hey messy",
+        "model_path": "models/hey-messy_en_raspberry-pi_v3_0_0.ppn",
+        "sensitivity": 0.5,
+        "volume_threshold": 100,
+        "max_volume": 4000,
+        "detection_window": 1.0,
+        "consecutive_frames": 1,
+        "retry_count": 5
+    })
+    
     # Directory Settings (from .env)
     BASE_DIR: Path = Path("/home/pi/messi")
     CACHE_DIR: Path = BASE_DIR / "cache"
@@ -142,6 +161,12 @@ class Settings(BaseSettings):
             self.MODEL_TEMPERATURE = float(config['models'].get('temperature', self.MODEL_TEMPERATURE))
             self.MODEL_MAX_TOKENS = int(config['models'].get('max_tokens', self.MODEL_MAX_TOKENS))
         
+        if 'router' in config:
+            self.router = config['router']
+            
+        if 'wake_word' in config:
+            self.wake_word = config['wake_word']
+            
         if 'audio' in config:
             audio_input = config['audio'].get('input', {})
             audio_output = config['audio'].get('output', {})
@@ -162,15 +187,6 @@ class Settings(BaseSettings):
             
             # Store raw config for compatibility
             self.audio = config['audio']
-
-        if 'wake_word' in config:
-            wake_word = config['wake_word']
-            self.WAKE_WORD = wake_word.get('name', self.WAKE_WORD)
-            self.WAKE_WORD_THRESHOLD = float(wake_word.get('threshold', self.WAKE_WORD_THRESHOLD))
-            self.WAKE_WORD_MIN_VOLUME = int(wake_word.get('min_volume', self.WAKE_WORD_MIN_VOLUME))
-            self.WAKE_WORD_MAX_VOLUME = int(wake_word.get('max_volume', self.WAKE_WORD_MAX_VOLUME))
-            self.WAKE_WORD_DETECTION_WINDOW = float(wake_word.get('detection_window', self.WAKE_WORD_DETECTION_WINDOW))
-            self.WAKE_WORD_CONSECUTIVE_FRAMES = int(wake_word.get('consecutive_frames', self.WAKE_WORD_CONSECUTIVE_FRAMES))
 
         if 'command' in config:
             command = config['command']

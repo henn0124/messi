@@ -421,13 +421,27 @@ class LearningManager:
                 with open(self.learning_file, 'r') as f:
                     saved_data = json.load(f)
                     
-                    # Restore intent learning data
-                    if "intent_learning" in saved_data:
-                        self.intent_learning = saved_data["intent_learning"]
+                    # Restore intent learning data with default weights
+                    if "intent_learning" not in saved_data:
+                        saved_data["intent_learning"] = {
+                            "patterns": {},
+                            "success_rates": {},
+                            "weights": {
+                                "previous_context": 0.4,
+                                "current_entities": 0.3,
+                                "user_engagement": 0.3
+                            }
+                        }
+                    self.intent_learning = saved_data["intent_learning"]
                     
-                    # Restore weights
-                    if "weights" in saved_data:
-                        self.weights = saved_data["weights"]
+                    # Restore weights with defaults
+                    if "weights" not in saved_data:
+                        saved_data["weights"] = {
+                            "context": {"education": 0.7, "conversation": 0.6},
+                            "patterns": {"base_confidence": 0.5},
+                            "last_updated": datetime.now().isoformat()
+                        }
+                    self.weights = saved_data["weights"]
                         
                     # Update learning data
                     self.learning_data = saved_data
@@ -806,26 +820,29 @@ class LearningManager:
             validation["files"]["dynamic_config"] = self.config_file.exists()
             
             # Check metrics
-            validation["metrics"]["patterns_count"] = len(self.intent_learning.get("patterns", {}))
-            validation["metrics"]["success_rates_count"] = len(self.intent_learning.get("success_rates", {}))
-            validation["metrics"]["queue_size"] = self.learning_queue.qsize()
-            
+            if hasattr(self, 'intent_learning'):
+                validation["metrics"]["patterns_count"] = sum(len(p) for p in self.intent_learning["patterns"].values())
+                validation["metrics"]["success_rates_count"] = len(self.intent_learning.get("success_rates", {}))
+            if hasattr(self, 'learning_queue'):
+                validation["metrics"]["queue_size"] = len(self.learning_queue)
+                
             # Check autonomous features
             validation["autonomous_features"]["pattern_discovery"] = (
-                hasattr(self, '_discover_new_patterns') and 
-                callable(getattr(self, '_discover_new_patterns'))
+                validation["components"]["pattern_learning"] and
+                validation["metrics"]["patterns_count"] > 0
             )
             validation["autonomous_features"]["weight_adjustment"] = (
-                hasattr(self, '_adjust_pattern_weight') and 
-                callable(getattr(self, '_adjust_pattern_weight'))
+                hasattr(self, 'weights') and
+                len(self.weights.get("context", {})) > 0
             )
             validation["autonomous_features"]["context_optimization"] = (
-                hasattr(self, 'optimize_context_manager') and 
-                callable(getattr(self, 'optimize_context_manager'))
+                self.context_manager is not None and
+                hasattr(self, 'patterns') and
+                len(self.patterns.get("context_transitions", {})) > 0
             )
             
             return validation
             
         except Exception as e:
             print(f"Error validating learning system: {e}")
-            return {}
+            return validation

@@ -3,58 +3,89 @@ models:
   chat: gpt-4-1106-preview
   whisper: whisper-1
   tts: tts-1
-  tts_voice: fable
-  tts_speed: 1.0
+  tts_voice: alloy           # Faster voice
+  tts_fallback: nova        # Fallback voice
+  tts_speed: 1.0            # Normal speed (0.25 to 4.0)
   temperature: 0.7
-  max_tokens: 4096
+  max_tokens: 150          # Reduced for concise responses
 
-# Audio Settings
+# Audio Settings (ALSA)
 audio:
   input:
-    device_index: 2            # TONOR TM20 Audio Device
-    device_name: "TONOR TM20 Audio Device: USB Audio"  # PyAudio device name
-    native_rate: 48000         # Native sample rate of microphone (48kHz)
-    processing_rate: 16000     # Required rate for Whisper/Porcupine
-    channels: 1                # Mono audio input
-    chunk_size: 1024          # Size of audio chunks to process
-    buffer_size: 8192         # Audio buffer size
-    pre_emphasis: 0.5         # High-frequency boost filter
-    silence_threshold: 100    # Lower threshold for better detection
+    # ALSA device settings
+    device: "hw:CARD=Device_1,DEV=0"    # TONOR TM20 Audio Device (Card 4)
+    format: "S16_LE"                    # 16-bit signed little-endian
+    rate: 48000                         # Sample rate (48kHz)
+    channels: 1                         # Mono input
+    period_size: 2048                   # ALSA buffer period size
+    
+    # Processing settings
+    processing_rate: 16000              # Rate for Whisper/Porcupine (16kHz)
+    silence_threshold: 1285             # Volume level to detect silence
+    silence_duration: 0.5               # Duration of silence to end recording (seconds)
+    pre_emphasis: 0.5                   # High-frequency boost
 
   output:
-    device_index: 1           # USB2.0 Device Audio
-    device_name: "USB2.0 Device: Audio"  # PyAudio device name
-    rate: 48000              # Match input rate
-    volume: 1.0              # Output volume multiplier
-    chunk_size: 2048         # Output buffer size
+    # ALSA device settings
+    device: "plughw:CARD=Device,DEV=0"  # USB Speaker (Card 3)
+    format: "S16_LE"                    # 16-bit signed little-endian
+    rate: 48000                         # Sample rate (48kHz)
+    channels: 1                         # Mono output
+    period_size: 2048                   # ALSA buffer period size
+    
+    # Volume control
+    volume: 1.0                         # Output volume multiplier
 
 # Wake Word Settings
 wake_word:
   name: "hey messy"
-  model_name: "hey-messy_en_raspberry-pi_v3_0_0.ppn"
-  threshold: 0.5               # More sensitive setting
-                             # Range: 0.0-1.0
-                             # 0.0 = Most sensitive (more detections)
-                             # 0.5 = Default balance
-                             # 1.0 = Least sensitive (fewer detections)
-  min_volume: 100            # Lower minimum volume for easier detection
-                            # Range: 0-32767 (16-bit audio RMS values)
-                            # Set above ambient noise (~1.5x ambient)
-  max_volume: 4000          # Higher maximum volume for louder speech
-                           # Range: 0-32767 (16-bit audio RMS values)
-                           # Almost full range for better detection
-  detection_window: 1.0      # Shorter time window (was 2.0)
-  consecutive_frames: 1      # Single frame detection is enough
-  retry_count: 5            # More retries if detection fails
+  model_path: "models/hey-messy_en_raspberry-pi_v3_0_0.ppn"
+  sensitivity: 0.5                    # Detection sensitivity (0.0-1.0)
+  
+  # Volume thresholds
+  volume_threshold: 1542              # Minimum volume for wake word detection
+  max_volume: 5182                    # Maximum volume before clipping
+  
+  # Detection parameters
+  detection_window: 1.0               # Time window in seconds
+  consecutive_frames: 1               # Required detections
+  retry_count: 5                      # Retries on failure
 
-# Command Settings
-command:
-  min_duration: 0.5          # Minimum command duration (seconds)
-  max_duration: 10.0         # Maximum command duration (seconds)
-  min_volume: 90            # Minimum volume for command detection
-  silence_timeout: 0.5      # Stop recording after silence duration
-  pre_buffer: 0.1           # Audio to keep before command starts
-  max_silence_chunks: 20    # Maximum silent chunks before stopping
+# Session Settings
+session:
+  require_reidentification: false     # Whether to verify user between sessions
+  timeout: 300                        # Session timeout (5 minutes)
+  max_turns: 10                       # Maximum conversation turns
+  idle_timeout: 60                    # Idle timeout (1 minute)
+
+# Speech Settings
+speech:
+  input_language: "en"                # Input language
+  output_language: "en-US"            # Output language
+  voice: "nova"                       # Primary TTS voice
+  fallback_voice: "alloy"            # Fallback TTS voice
+  model: "whisper-1"                  # Speech recognition model
+  max_tokens: 150                     # Maximum response length
+  temperature: 0.7                    # Response randomness
+
+# Learning Settings
+learning:
+  enabled: true                       # Toggle learning system
+  
+  # Learning parameters
+  pattern_threshold: 3                # Minimum patterns for learning
+  success_threshold: 0.8              # Required success rate
+  context_window: 5                   # Context history size
+  max_patterns: 1000                  # Maximum stored patterns
+  
+  # Storage paths
+  data_path: "cache/learning/learning.json"
+
+# Router Settings
+router:
+  default_context: "general"          # Default conversation context
+  fallback_context: "help"            # Context when errors occur
+  max_history: 10                     # Maximum conversation history
 
 # Logging Settings
 logging:
@@ -63,26 +94,12 @@ logging:
   backup_count: 5
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
-# Learning Settings
-learning:
-  enabled: true  # Toggle learning system on/off
-  parameters:
-    learning_rate: 0.1
-    decay_factor: 0.95
-    update_frequency: 3600
-    min_samples: 10
-  storage:
-    data_path: "cache/learning/learning.json"
-    config_path: "config/dynamic_config.yaml"
-    logs_path: "logs/learning_updates.log"
-
 # Notes:
+# - Audio uses ALSA (Advanced Linux Sound Architecture) directly
 # - All volume levels use RMS values from 16-bit audio (0-32767)
-#   - Ambient noise: 200-800
-#   - Normal speech: 500-2000
-#   - Loud speech: 2000-4000
+#   - Ambient noise: ~200-800
+#   - Normal speech: ~500-2000
+#   - Loud speech: ~2000-4000
 #   - Very loud/clipping: >4000
-# - Calibrated using TONOR TM20 microphone with onboard DSP
-# - Values may need adjustment if mic DSP behavior changes
-# - Consider recalibrating if mic settings are modified
-# - Monitor for over-filtering if both DSP and our filters are active
+# - Calibrated for TONOR TM20 microphone
+# - Recalibrate if microphone settings change

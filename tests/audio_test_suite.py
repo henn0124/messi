@@ -1,506 +1,493 @@
-import pyaudio
-import wave
+"""
+Audio Test Suite for Messi Assistant
+----------------------------------
+Tests audio input/output functionality using ALSA.
+"""
+
+import alsaaudio
 import numpy as np
+import wave
 import asyncio
-import sys
-from pathlib import Path
 import time
-import io
+import os
+import sys
 from datetime import datetime
-import pvporcupine
-from concurrent.futures import ThreadPoolExecutor
+import traceback
+from pathlib import Path
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(project_root))
 
-from src.core.audio import AudioInterface
 from src.core.config import Settings
+from src.core.wake_word import WakeWordDetector
 
 class AudioTester:
     def __init__(self):
-        """Initialize audio testing environment"""
-        print("\nInitializing audio test suite...")
-        
-        # Initialize PyAudio
-        self.p = None
-        
-        # Load settings
+        # Initialize settings
         self.settings = Settings()
-        self.audio = AudioInterface()
-        self.test_file = None
         
-        # Audio configuration
-        self.input_rate = 48000  # Always use 48kHz
-        self.chunk_size = self.settings.audio["input"]["chunk_size"]
+        # Audio configuration from settings
+        self.audio_config = self.settings.audio
         
-        # Initialize wake word detector if needed
-        self.porcupine = None
-        self.wake_word_detected = False
+        # Audio settings
+        self.input_rate = self.audio_config["input"]["rate"]
+        self.output_rate = self.audio_config["output"]["rate"]
+        self.processing_rate = self.audio_config["input"]["processing_rate"]
+        self.period_size = self.audio_config["input"]["period_size"]
+        self.channels = self.audio_config["input"]["channels"]
         
-    def __del__(self):
-        """Clean up resources"""
-        self.cleanup()
+        # Volume thresholds
+        self.min_volume = self.settings.WAKE_WORD_MIN_VOLUME
+        self.max_volume = self.settings.WAKE_WORD_MAX_VOLUME
         
-    def cleanup(self):
-        """Clean up audio resources"""
-        if hasattr(self, 'stream') and self.stream:
-            try:
-                self.stream.stop_stream()
-                self.stream.close()
-            except:
-                pass
-            
-        if self.p:
-            try:
-                self.p.terminate()
-            except:
-                pass
-            self.p = None
-            
-        if self.porcupine:
-            try:
-                self.porcupine.delete()
-            except:
-                pass
-            self.porcupine = None
+        # Initialize streams
+        self.input_stream = None
+        self.output_stream = None
+        
+        # Initialize wake word detector
+        self.wake_word_detector = WakeWordDetector(self.settings)
+        self.frame_length = self.wake_word_detector.porcupine.frame_length
+        self.samples_per_frame = int(self.frame_length * self.input_rate / self.processing_rate)
+        
+        # Test state
+        self.running = False
+        self.test_duration = 10  # Default test duration in seconds
+        
+        # Create test output directory
+        os.makedirs("tests/output", exist_ok=True)
 
-    async def run_tests(self):
-        """Run comprehensive audio tests"""
+    async def cleanup(self):
+        """Clean up audio resources"""
+        if self.input_stream:
+            try:
+                self.input_stream.close()
+            except:
+                pass
+            self.input_stream = None
+            
+        if self.output_stream:
+            try:
+                self.output_stream.close()
+            except:
+                pass
+            self.output_stream = None
+
+    def _try_open_input_device(self, device_name):
+        """Try to open an input device with fallbacks"""
         try:
-            print("\n=== Audio System Test ===")
+            return alsaaudio.PCM(
+                type=alsaaudio.PCM_CAPTURE,
+                mode=alsaaudio.PCM_NORMAL,
+                device=device_name,
+                format=alsaaudio.PCM_FORMAT_S16_LE,
+                channels=self.channels,
+                rate=self.input_rate,
+                periodsize=self.period_size
+            )
+        except alsaaudio.ALSAAudioError as e:
+            print(f"Could not open {device_name}: {e}")
+            return None
+
+    def _find_available_input_device(self):
+        """Find an available input device"""
+        # First try the configured device
+        primary_device = self.audio_config["input"]["device"]
+        stream = self._try_open_input_device(primary_device)
+        if stream:
+            print(f"Using primary device: {primary_device}")
+            return stream, primary_device
+
+        # Try alternative device names for TONOR TM20
+        alt_devices = [
+            "hw:CARD=Device_1,DEV=0",
+            "plughw:CARD=Device_1,DEV=0",
+            "sysdefault:CARD=Device_1",
+            "default"
+        ]
+        
+        for device in alt_devices:
+            print(f"Trying alternative device: {device}")
+            stream = self._try_open_input_device(device)
+            if stream:
+                print(f"Using alternative device: {device}")
+                return stream, device
+
+        # Last resort: try any available capture device
+        for device in alsaaudio.pcms(alsaaudio.PCM_CAPTURE):
+            if device not in ["null", "default"]:
+                print(f"Trying fallback device: {device}")
+                stream = self._try_open_input_device(device)
+                if stream:
+                    print(f"Using fallback device: {device}")
+                    return stream, device
+
+        return None, None
+
+    async def initialize_audio(self):
+        """Initialize audio devices"""
+        try:
+            await self.cleanup()
             
-            # Initialize audio interface
-            await self.audio.initialize()
+            print("\nInitializing audio devices...")
             
-            while True:
-                print("\nTest Options:")
-                print("1. Test wake word detection")
-                print("2. Test audio playback")
-                print("3. Test audio recording")
-                print("4. Calibrate wake word")
-                print("5. Calibrate microphone")
-                print("6. Exit")
-                
-                choice = input("\nChoose test (1-6): ")
-                
-                if choice == '1':
-                    await self.test_wake_word()
-                elif choice == '2':
-                    await self.test_playback()
-                elif choice == '3':
-                    await self.test_recording()
-                elif choice == '4':
-                    await self.calibrate_wake_word()
-                elif choice == '5':
-                    await self.calibrate_microphone()
-                elif choice == '6':
-                    break
-                else:
-                    print("Invalid choice")
+            # List available devices
+            print("\nAvailable PCM capture devices:")
+            for device in alsaaudio.pcms(alsaaudio.PCM_CAPTURE):
+                print(f"  {device}")
+            
+            print("\nAvailable PCM playback devices:")
+            for device in alsaaudio.pcms(alsaaudio.PCM_PLAYBACK):
+                print(f"  {device}")
+            
+            # Try to find an available input device
+            self.input_stream, input_device = self._find_available_input_device()
+            if not self.input_stream:
+                print("❌ Could not find any available input devices!")
+                return False
+            
+            # Initialize output stream
+            try:
+                self.output_stream = alsaaudio.PCM(
+                    type=alsaaudio.PCM_PLAYBACK,
+                    mode=alsaaudio.PCM_NORMAL,
+                    device="default",  # Use default output device
+                    format=alsaaudio.PCM_FORMAT_S16_LE,
+                    channels=self.channels,
+                    rate=self.output_rate,
+                    periodsize=self.period_size
+                )
+            except alsaaudio.ALSAAudioError as e:
+                print(f"Warning: Could not open output device: {e}")
+                print("Continuing without audio output...")
+            
+            print("\n✓ Audio devices initialized")
+            print(f"Input device: {input_device}")
+            print(f"Output device: {'default' if self.output_stream else 'None'}")
+            return True
             
         except Exception as e:
-            print(f"Test error: {e}")
-            import traceback
+            print(f"Error initializing audio: {e}")
             traceback.print_exc()
-        finally:
-            await self.cleanup()
+            return False
+
+    def _resample_audio(self, audio_48k):
+        """Resample 48kHz audio to 16kHz using high-quality interpolation"""
+        try:
+            # Calculate exact ratio
+            ratio = self.processing_rate / self.input_rate
+            
+            # Calculate target length
+            target_length = int(len(audio_48k) * ratio)
+            
+            # Use numpy's efficient interpolation
+            resampled = np.interp(
+                np.linspace(0, len(audio_48k) - 1, target_length),
+                np.arange(len(audio_48k)),
+                audio_48k
+            ).astype(np.int16)
+            
+            # Ensure exact frame length
+            if len(resampled) > self.frame_length:
+                return resampled[:self.frame_length]
+            elif len(resampled) < self.frame_length:
+                return np.pad(resampled, (0, self.frame_length - len(resampled)))
+            return resampled
+            
+        except Exception as e:
+            print(f"Error in resampling: {e}")
+            return np.zeros(self.frame_length, dtype=np.int16)
 
     async def test_wake_word(self):
         """Test wake word detection"""
-        print("\n=== Wake Word Test ===")
-        
         try:
-            # Clean up any existing resources
-            self.cleanup()
+            print("\nStarting wake word detection test...")
+            print("Say 'Hey Messy' to test detection")
+            print("Test will run for", self.test_duration, "seconds")
             
-            # Initialize PyAudio
-            self.p = pyaudio.PyAudio()
+            self.running = True
+            start_time = time.time()
+            detections = 0
+            frames_processed = 0
+            buffer = np.array([], dtype=np.int16)
             
-            # Initialize wake word detector
-            print("\nInitializing wake word detector...")
-            self.porcupine = pvporcupine.create(
-                access_key=self.settings.PICOVOICE_ACCESS_KEY,
-                keyword_paths=[str(self.settings.WAKE_WORD_MODEL_PATH)],
-                sensitivities=[0.5]  # Default sensitivity
-            )
-            
-            # Calculate frame sizes
-            self.frame_length = self.porcupine.frame_length
-            self.samples_per_frame = int(self.frame_length * self.input_rate / 16000)
-            
-            print(f"\nAudio Configuration:")
-            print(f"  Input rate: {self.input_rate}Hz")
-            print(f"  Frame length: {self.frame_length} samples")
-            print(f"  Samples per frame: {self.samples_per_frame}")
-            print(f"  Chunk size: {self.chunk_size}")
-            
-            # Find TONOR TM20 device
-            device_index = None
-            print("\nLooking for TONOR TM20 device:")
-            for i in range(self.p.get_device_count()):
-                dev = self.p.get_device_info_by_index(i)
-                print(f"\nDevice {i}:")
-                print(f"    Name: {dev['name']}")
-                print(f"    Max Input Channels: {dev['maxInputChannels']}")
-                print(f"    Max Output Channels: {dev['maxOutputChannels']}")
-                print(f"    Default Sample Rate: {dev['defaultSampleRate']}")
-                if "TONOR TM20" in dev['name']:
-                    device_index = i
-                    print(f"✓ Found TONOR TM20 at index {i}")
-            
-            if device_index is None:
-                print("❌ Could not find TONOR TM20 device!")
-                return
-            
-            # Configure audio stream
-            print(f"\nOpening audio stream with device index {device_index}")
-            try:
-                self.stream = self.p.open(
-                    format=pyaudio.paInt16,
-                    channels=1,
-                    rate=self.input_rate,
-                    input=True,
-                    input_device_index=device_index,
-                    frames_per_buffer=self.samples_per_frame
-                )
-            except Exception as e:
-                print(f"Error opening stream: {e}")
-                print("Trying to terminate and reinitialize PyAudio...")
-                self.cleanup()
-                self.p = pyaudio.PyAudio()
-                self.stream = self.p.open(
-                    format=pyaudio.paInt16,
-                    channels=1,
-                    rate=self.input_rate,
-                    input=True,
-                    input_device_index=device_index,
-                    frames_per_buffer=self.samples_per_frame
-                )
-            
-            print("\nListening for wake word 'Hey Messy'...")
-            print("Press Ctrl+C to stop")
-            
-            # Get volume thresholds from config
-            min_volume = 100  # Default minimum volume
-            max_volume = 4000  # Default maximum volume
-            
-            while True:
+            while time.time() - start_time < self.test_duration and self.running:
                 # Read audio frame
-                data = self.stream.read(self.samples_per_frame, exception_on_overflow=False)
-                audio = np.frombuffer(data, dtype=np.int16)
-                
-                # Resample from 48kHz to 16kHz for Porcupine
-                resampled = np.interp(
-                    np.linspace(0, len(audio), self.frame_length),
-                    np.arange(len(audio)),
-                    audio
-                ).astype(np.int16)
-                
-                # Process frame
-                result = self.porcupine.process(resampled)
-                
-                # Calculate volume for feedback
-                volume = np.abs(audio).mean()
-                if volume > max_volume:
-                    meter = "LOUD! "
-                elif volume > min_volume:
-                    meter = "#" * int((volume - min_volume) / (max_volume - min_volume) * 20)
-                else:
-                    meter = "soft "
-                
-                print(f"\rListening... Volume: {meter} ({volume:.0f})", end="", flush=True)
-                
-                if result >= 0:
-                    print("\n\nWake word detected!")
-                    break
+                length, data = self.input_stream.read()
+                if length > 0:
+                    # Convert to numpy array and add to buffer
+                    audio = np.frombuffer(data, dtype=np.int16)
+                    buffer = np.concatenate([buffer, audio])
+                    
+                    # Calculate and display volume level
+                    volume = np.abs(audio).mean()
+                    
+                    # Visual volume meter
+                    if volume > self.max_volume:
+                        meter = "LOUD! 🔊"
+                    elif volume > self.min_volume:
+                        meter_length = int((volume - self.min_volume) / (self.max_volume - self.min_volume) * 30)
+                        meter = "▮" * meter_length
+                    else:
+                        meter = "quiet"
+                    
+                    print(f"\rLevel: {meter:<32} ({volume:>4.0f})", end="", flush=True)
+                    
+                    # Process complete frames from buffer
+                    while len(buffer) >= self.samples_per_frame:
+                        # Extract frame
+                        frame = buffer[:self.samples_per_frame]
+                        buffer = buffer[self.samples_per_frame:]
+                        
+                        # Resample from 48kHz to 16kHz
+                        resampled = self._resample_audio(frame)
+                        
+                        # Process with wake word detector
+                        result = self.wake_word_detector.process_frame(resampled)
+                        frames_processed += 1
+                        
+                        if result:
+                            detections += 1
+                            print(f"\n🎤 Wake word detected! ({detections} total)")
                 
                 await asyncio.sleep(0.001)
             
-        except KeyboardInterrupt:
-            print("\n\nStopped by user")
-        except Exception as e:
-            print(f"\nError in wake word test: {e}")
-            if hasattr(e, '__traceback__'):
-                import traceback
-                traceback.print_exc()
-        finally:
-            if 'stream' in locals():
-                stream.stop_stream()
-                stream.close()
-            if self.porcupine:
-                self.porcupine.delete()
-
-    async def test_playback(self):
-        """Test audio playback"""
-        print("\n=== Audio Playback Test ===")
-        
-        if not self.test_file:
-            print("No test files found!")
-            return
+            print(f"\n\nTest complete!")
+            print(f"Processed {frames_processed} frames")
+            print(f"Detected wake word {detections} times")
             
-        try:
-            with wave.open(str(self.test_file), 'rb') as wf:
-                # Get WAV file properties
-                channels = wf.getnchannels()
-                sample_width = wf.getsampwidth()
-                frame_rate = wf.getframerate()
-                
-                # Calculate actual frames from file size
-                file_size = self.test_file.stat().st_size
-                bytes_per_frame = channels * sample_width
-                actual_frames = (file_size - 44) // bytes_per_frame  # 44 bytes for WAV header
-                
-                print("\nWAV File Properties:")
-                print(f"Channels: {channels}")
-                print(f"Sample width: {sample_width} bytes")
-                print(f"Frame rate: {frame_rate} Hz")
-                print(f"Frames: {actual_frames}")
-                duration = actual_frames / float(frame_rate)
-                print(f"Duration: {duration:.1f} seconds")
-                print(f"File size: {file_size} bytes")
-                print(f"Bytes per frame: {bytes_per_frame}")
-                
-                # Read the entire file
-                print("\nReading audio file...")
-                wf.setpos(0)  # Reset position to start of audio data
-                audio_data = wf.readframes(actual_frames)
-                print(f"Read {len(audio_data)} bytes of audio data")
-                
-                # Always use 48kHz for playback
-                self.audio.settings.audio["output"]["rate"] = 48000
-                
-                print("\nPlaying audio...")
-                await self.audio.play_audio_chunk(audio_data)
-                print("Playback complete")
-                
         except Exception as e:
-            print(f"Playback error: {e}")
-            if hasattr(e, '__traceback__'):
-                import traceback
-                traceback.print_exc()
+            print(f"Error in wake word test: {e}")
+            traceback.print_exc()
+        finally:
+            self.running = False
 
     async def test_recording(self):
         """Test audio recording"""
-        print("\n=== Audio Recording Test ===")
-        
         try:
-            # Configure audio stream for recording
-            input_rate = 48000  # Use 48kHz for hardware compatibility
-            print(f"\nConfiguring recording at {input_rate}Hz")
-            stream = self.p.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=input_rate,
-                input=True,
-                input_device_index=self.audio.settings.audio["input"]["device_index"],
-                frames_per_buffer=self.audio.settings.audio["input"]["chunk_size"]
-            )
+            print("\nStarting recording test...")
+            print("Recording will run for", self.test_duration, "seconds")
             
-            frames = []
-            print("\nRecording for 5 seconds...")
+            self.running = True
+            start_time = time.time()
+            chunks = []
             
-            # Record for 5 seconds
-            chunks_to_record = int(input_rate * 5 / self.audio.settings.audio["input"]["chunk_size"])
-            print(f"Recording {chunks_to_record} chunks at {self.audio.settings.audio['input']['chunk_size']} samples per chunk")
+            while time.time() - start_time < self.test_duration and self.running:
+                # Read audio frame
+                length, data = self.input_stream.read()
+                if length > 0:
+                    chunks.append(data)
+                    
+                    # Calculate and display volume level
+                    audio = np.frombuffer(data, dtype=np.int16)
+                    volume = np.abs(audio).mean()
+                    
+                    # Visual volume meter
+                    if volume > self.max_volume:
+                        meter = "LOUD! 🔊"
+                    elif volume > self.min_volume:
+                        meter_length = int((volume - self.min_volume) / (self.max_volume - self.min_volume) * 30)
+                        meter = "▮" * meter_length
+                    else:
+                        meter = "quiet"
+                    
+                    print(f"\rLevel: {meter:<32} ({volume:>4.0f})", end="", flush=True)
+                
+                await asyncio.sleep(0.001)
             
-            for _ in range(chunks_to_record):
-                data = stream.read(self.audio.settings.audio["input"]["chunk_size"], exception_on_overflow=False)
-                frames.append(data)
+            print("\n\nSaving recording...")
             
-            print("Recording complete")
-            stream.stop_stream()
-            stream.close()
+            # Save as WAV file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"tests/output/test_recording_{timestamp}.wav"
             
-            # Save recording
-            print("\nSaving recording...")
-            self.test_file = Path("test_recording.wav")
-            with wave.open(str(self.test_file), 'wb') as wf:
-                wf.setnchannels(1)
+            with wave.open(filename, 'wb') as wf:
+                wf.setnchannels(self.channels)
                 wf.setsampwidth(2)  # 16-bit audio
-                wf.setframerate(input_rate)  # Save at 48kHz
-                wav_data = b''.join(frames)
-                print(f"Total bytes to write: {len(wav_data)}")
-                wf.writeframes(wav_data)
+                wf.setframerate(self.input_rate)
+                wf.writeframes(b''.join(chunks))
             
-            # Verify the saved file
-            with wave.open(str(self.test_file), 'rb') as wf:
-                print(f"\nVerifying saved WAV file:")
-                print(f"Channels: {wf.getnchannels()}")
-                print(f"Sample width: {wf.getsampwidth()} bytes")
-                print(f"Frame rate: {wf.getframerate()} Hz")
-                print(f"Number of frames: {wf.getnframes()}")
-                print(f"Expected duration: {wf.getnframes() / float(wf.getframerate()):.1f} seconds")
+            print(f"Recording saved to: {filename}")
             
-            print(f"\nSaved as {self.test_file}")
+            # Play back the recording
+            print("\nPlaying back recording...")
+            
+            with wave.open(filename, 'rb') as wf:
+                data = wf.readframes(wf.getnframes())
+                
+                # Write audio data in chunks
+                chunk_size = self.period_size * 2  # 2 bytes per sample
+                for i in range(0, len(data), chunk_size):
+                    chunk = data[i:i + chunk_size]
+                    if chunk:
+                        self.output_stream.write(chunk)
+            
+            print("Playback complete!")
             
         except Exception as e:
-            print(f"Recording error: {e}")
-            if hasattr(e, '__traceback__'):
-                import traceback
-                traceback.print_exc()
+            print(f"Error in recording test: {e}")
+            traceback.print_exc()
+        finally:
+            self.running = False
 
-    async def calibrate_wake_word(self):
-        """Calibrate wake word settings"""
-        print("\n=== Wake Word Calibration ===")
-        print("This will help find the optimal settings for wake word detection")
-        
+    async def test_playback(self):
+        """Test audio playback"""
         try:
-            # Test different sensitivity levels
-            sensitivities = [0.3, 0.5, 0.7, 0.9]
-            best_sensitivity = 0.5
-            best_detections = 0
+            print("\nStarting playback test...")
             
-            for sensitivity in sensitivities:
-                print(f"\nTesting sensitivity: {sensitivity}")
-                
-                # Initialize Porcupine with current sensitivity
-                if self.audio.porcupine:
-                    self.audio.porcupine.delete()
-                
-                self.audio.porcupine = pvporcupine.create(
-                    access_key=self.settings.PICOVOICE_ACCESS_KEY,
-                    keyword_paths=[str(self.settings.WAKE_WORD_MODEL_PATH)],
-                    sensitivities=[sensitivity]
-                )
-                
-                print("\nSay 'Hey Messy' 3 times...")
-                detections = 0
-                start_time = time.time()
-                
-                while time.time() - start_time < 10:  # 10 second test window
-                    pcm = await self._get_next_audio_frame()
-                    if pcm is None:
-                        continue
-                        
-                    result = self.audio.porcupine.process(pcm)
-                    level = np.abs(pcm).mean()
-                    
-                    print(f"\rLevel: {level:.0f}", end='', flush=True)
-                    
-                    if result >= 0:
-                        detections += 1
-                        print(f"\nDetection {detections}/3!")
-                        if detections >= 3:
-                            break
-                            
-                    await asyncio.sleep(0.001)
-                
-                if detections > best_detections:
-                    best_detections = detections
-                    best_sensitivity = sensitivity
+            # Generate test tone (1kHz sine wave)
+            duration = 2.0  # seconds
+            frequency = 1000.0  # Hz
+            samples = np.arange(int(duration * self.output_rate))
+            tone = (32767 * np.sin(2 * np.pi * frequency * samples / self.output_rate)).astype(np.int16)
             
-            print(f"\n\nRecommended settings:")
-            print(f"Wake word threshold: {best_sensitivity}")
-            print(f"Min volume: {self.wake_word_min_volume}")
-            print(f"Max volume: {self.wake_word_max_volume}")
+            print("Playing test tone (1kHz)...")
+            
+            # Write audio data in chunks
+            chunk_size = self.period_size * 2  # 2 bytes per sample
+            for i in range(0, len(tone) * 2, chunk_size):
+                chunk = tone[i//2:i//2 + self.period_size].tobytes()
+                if chunk:
+                    self.output_stream.write(chunk)
+            
+            print("Playback complete!")
             
         except Exception as e:
-            print(f"Calibration error: {e}")
+            print(f"Error in playback test: {e}")
+            traceback.print_exc()
 
     async def calibrate_microphone(self):
-        """Calibrate microphone levels"""
-        print("\n=== Microphone Calibration ===")
-        
+        """Calibrate microphone levels and thresholds"""
         try:
-            # Measure ambient noise
-            print("\nMeasuring ambient noise...")
+            print("\nStarting microphone calibration...")
+            print("This test will help determine optimal audio thresholds.")
+            
+            # Initialize arrays for collecting samples
+            ambient_samples = []
+            speech_samples = []
+            
+            # Step 1: Measure ambient noise
+            print("\n1. Measuring ambient noise")
             print("Please remain quiet for 5 seconds...")
             
-            ambient_levels = []
             start_time = time.time()
-            
             while time.time() - start_time < 5:
-                data = self.audio.stream.read(self.chunk_size, exception_on_overflow=False)
-                audio = np.frombuffer(data, dtype=np.int16)
-                level = np.abs(audio).mean()
-                ambient_levels.append(level)
-                meter = "#" * int(level/100)
-                print(f"\rLevel: {meter} ({level:.0f})", end="", flush=True)
+                length, data = self.input_stream.read()
+                if length > 0:
+                    audio = np.frombuffer(data, dtype=np.int16)
+                    volume = np.abs(audio).mean()
+                    ambient_samples.append(volume)
+                    
+                    # Visual feedback
+                    meter_length = int(volume / 100)
+                    meter = "▮" * min(meter_length, 30)
+                    print(f"\rLevel: {meter:<32} ({volume:>4.0f})", end="", flush=True)
                 await asyncio.sleep(0.001)
             
-            ambient_mean = np.mean(ambient_levels)
-            print(f"\n\nAmbient noise level: {ambient_mean:.0f}")
+            # Calculate ambient noise statistics
+            ambient_mean = np.mean(ambient_samples)
+            ambient_std = np.std(ambient_samples)
             
-            # Measure speech levels
-            print("\nNow testing speech levels...")
+            # Step 2: Measure normal speech
+            print("\n\n2. Measuring normal speech")
             print("Please speak normally for 5 seconds...")
+            print("Say something like: 'This is my normal speaking voice'")
             
-            speech_levels = []
             start_time = time.time()
-            
             while time.time() - start_time < 5:
-                data = self.audio.stream.read(self.chunk_size, exception_on_overflow=False)
-                audio = np.frombuffer(data, dtype=np.int16)
-                level = np.abs(audio).mean()
-                speech_levels.append(level)
-                meter = "#" * int(level/100)
-                print(f"\rLevel: {meter} ({level:.0f})", end="", flush=True)
+                length, data = self.input_stream.read()
+                if length > 0:
+                    audio = np.frombuffer(data, dtype=np.int16)
+                    volume = np.abs(audio).mean()
+                    speech_samples.append(volume)
+                    
+                    # Visual feedback
+                    meter_length = int(volume / 100)
+                    meter = "▮" * min(meter_length, 30)
+                    print(f"\rLevel: {meter:<32} ({volume:>4.0f})", end="", flush=True)
                 await asyncio.sleep(0.001)
             
-            speech_mean = np.mean(speech_levels)
-            print(f"\n\nAverage speech level: {speech_mean:.0f}")
+            # Calculate speech statistics
+            speech_mean = np.mean(speech_samples)
+            speech_std = np.std(speech_samples)
             
-            # Calculate recommended settings
-            recommended_min = max(ambient_mean * 1.5, 100)
-            recommended_max = min(speech_mean * 1.5, 4000)
+            # Calculate recommended thresholds
+            silence_threshold = ambient_mean + (2 * ambient_std)
+            wake_word_threshold = silence_threshold * 1.2
+            max_volume = speech_mean + (3 * speech_std)
             
-            print("\nRecommended settings:")
-            print(f"Minimum volume: {recommended_min:.0f}")
-            print(f"Maximum volume: {recommended_max:.0f}")
-            print(f"Silence threshold: {ambient_mean * 1.2:.0f}")
+            # Print results
+            print("\n\nCalibration Results:")
+            print("-" * 40)
+            print(f"Ambient Noise:")
+            print(f"  Mean: {ambient_mean:.1f}")
+            print(f"  Std Dev: {ambient_std:.1f}")
+            print(f"\nNormal Speech:")
+            print(f"  Mean: {speech_mean:.1f}")
+            print(f"  Std Dev: {speech_std:.1f}")
+            
+            print("\nRecommended Settings:")
+            print("-" * 40)
+            print("Add these to your config.yaml:")
+            print("\naudio:")
+            print("  input:")
+            print(f"    silence_threshold: {silence_threshold:.0f}    # Volume level to detect silence")
+            print(f"    silence_duration: 0.5     # Duration of silence to end recording")
+            print("\nwake_word:")
+            print(f"  volume_threshold: {wake_word_threshold:.0f}    # Minimum volume for wake word")
+            print(f"  max_volume: {max_volume:.0f}         # Maximum volume before clipping")
             
         except Exception as e:
-            print(f"Calibration error: {e}")
+            print(f"\nError in microphone calibration: {e}")
+            traceback.print_exc()
 
-    async def cleanup(self):
-        """Clean up resources"""
-        try:
-            if self.audio.stream:
-                self.audio.stream.stop_stream()
-                self.audio.stream.close()
-            if self.audio.porcupine:
-                self.audio.porcupine.delete()
-        except Exception as e:
-            print(f"Cleanup error: {e}")
-
-    async def _get_next_audio_frame(self):
-        """Get the next audio frame for wake word detection"""
-        try:
-            # Calculate required input samples to get 512 samples after resampling
-            input_samples = int(512 * self.input_rate / 16000)
+async def main():
+    """Main test suite entry point"""
+    print("\nInitializing audio test suite...")
+    
+    tester = AudioTester()
+    if not await tester.initialize_audio():
+        print("❌ Failed to initialize audio!")
+        return
+    
+    try:
+        while True:
+            print("\nAudio Test Suite")
+            print("----------------")
+            print("1. Test Wake Word Detection")
+            print("2. Test Audio Playback")
+            print("3. Test Audio Recording")
+            print("4. Calibrate Microphone")
+            print("5. Set Test Duration")
+            print("6. Exit")
             
-            # Read enough samples
-            data = self.audio.stream.read(input_samples, exception_on_overflow=False)
-            audio = np.frombuffer(data, dtype=np.int16)
+            choice = input("\nSelect a test (1-6): ").strip()
             
-            # Resample to 16kHz for Porcupine
-            if self.input_rate != 16000:
-                # Create time arrays for interpolation
-                time_orig = np.linspace(0, len(audio), len(audio))
-                time_new = np.linspace(0, len(audio), 512)
-                
-                # Resample using linear interpolation
-                resampled = np.interp(time_new, time_orig, audio).astype(np.int16)
-                
-                # Ensure exactly 512 samples
-                if len(resampled) > 512:
-                    return resampled[:512]
-                elif len(resampled) < 512:
-                    return np.pad(resampled, (0, 512 - len(resampled)))
-                return resampled
-            
-            # If already at 16kHz, ensure 512 samples
-            if len(audio) > 512:
-                return audio[:512]
-            elif len(audio) < 512:
-                return np.pad(audio, (0, 512 - len(audio)))
-            return audio
-            
-        except Exception as e:
-            print(f"Error getting audio frame: {e}")
-            return None
+            if choice == "1":
+                await tester.test_wake_word()
+            elif choice == "2":
+                await tester.test_playback()
+            elif choice == "3":
+                await tester.test_recording()
+            elif choice == "4":
+                await tester.calibrate_microphone()
+            elif choice == "5":
+                try:
+                    duration = float(input("Enter test duration in seconds: "))
+                    tester.test_duration = max(1.0, duration)
+                    print(f"Test duration set to {tester.test_duration} seconds")
+                except ValueError:
+                    print("Invalid duration! Using default.")
+            elif choice == "6":
+                break
+            else:
+                print("Invalid choice!")
+    
+    except KeyboardInterrupt:
+        print("\nTest suite interrupted!")
+    finally:
+        await tester.cleanup()
+        print("\nTest suite cleanup complete")
 
 if __name__ == "__main__":
-    tester = AudioTester()
-    asyncio.run(tester.run_tests())
+    asyncio.run(main())

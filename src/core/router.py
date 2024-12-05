@@ -1,214 +1,178 @@
-from typing import Dict, List
-from openai import AsyncOpenAI
+from typing import Optional, Dict, Any
 from .config import Settings
-from .logger import ConversationLogger
-from .context_manager import ContextManager
-from .learning_manager import LearningManager
-from .intent_learner import IntentLearner
-import yaml
+import logging
+import json
 from pathlib import Path
-from .user_manager import UserManager
+from datetime import datetime
 
-class AssistantRouter:
-    def __init__(self, user_manager=None):
-        self.settings = Settings()
-        self.user_manager = user_manager
+class Router:
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.context = self.settings.router["default_context"]
+        self.history = []
         
-        # Initialize components
-        self.intent_learner = IntentLearner(settings=self.settings) if self.settings.learning.enabled else None
-        self.context_manager = None  # Will be set by MessiAssistant
+        # Setup persistent storage
+        self.storage_dir = Path(self.settings.CACHE_DIR) / "context"
+        self.storage_dir.mkdir(parents=True, exist_ok=True)
+        self.context_file = self.storage_dir / "conversation_history.json"
         
-        # Track conversation state
-        self.current_context = None
-        self.last_intent = None
-        self.conversation_history = []
-
-    async def initialize(self):
-        """Initialize async components of the router"""
-        if self.intent_learner:
-            await self.intent_learner.initialize()
-
-    def _load_skills_config(self) -> Dict:
-        """Load skills configuration"""
+        # Load previous context if exists
+        self._load_context()
+        
+    def _load_context(self) -> None:
+        """Load context from persistent storage"""
         try:
-            config_path = Path("config/skills_config.yaml")
-            with open(config_path) as f:
-                return yaml.safe_load(f)
+            if self.context_file.exists():
+                with open(self.context_file, 'r') as f:
+                    data = json.load(f)
+                    self.context = data.get('context', self.context)
+                    self.history = data.get('history', [])
+                    # Trim history if needed
+                    while len(self.history) > self.settings.router["max_history"]:
+                        self.history.pop(0)
         except Exception as e:
-            print(f"Error loading skills config: {e}")
-            return {}
-
-    def _load_skills(self):
-        """Load available skills from skills directory"""
+            logging.error(f"Error loading context: {e}")
+            
+    def _save_context(self) -> None:
+        """Save context to persistent storage"""
         try:
-            from .skills.available.education import Education, skill_manifest as education_manifest
-            from .skills.available.story import Story, skill_manifest as story_manifest
-            # Add more skills imports here
-            
-            # Initialize skills with manifests
-            self.skills["education"] = Education()
-            self.skills["story"] = Story()
-            # Add more skills here
-            
+            data = {
+                'context': self.context,
+                'history': self.history,
+                'timestamp': datetime.now().isoformat()
+            }
+            with open(self.context_file, 'w') as f:
+                json.dump(data, f, indent=2)
         except Exception as e:
-            print(f"Error loading skills: {e}")
-
-    def _score_intents(self, text: str, context_info: Dict = None) -> Dict[str, float]:
-        """Score intents using skills config"""
-        # Get base scores
-        scores = self.skills_config.get("intents", {}).get("base_scores", {}).copy()
-        if not scores:
-            scores = {
-                "story": 0.0,
-                "education": 0.0,
-                "tutor": 0.0,
-                "timer": 0.0,
-                "conversation": 0.0
-            }
-        text_lower = text.lower()
+            logging.error(f"Error saving context: {e}")
         
-        # Apply pattern matching with config weights
-        patterns = self.skills_config.get("intents", {}).get("patterns", {})
-        weights = self.skills_config.get("intents", {}).get("weights", {})
-        for intent, config in patterns.items():
-            if any(pattern in text_lower for pattern in config.get("keywords", [])):
-                scores[intent] += weights.get(intent, 1.0)
+    def get_context(self) -> str:
+        """Get current conversation context"""
+        return self.context
         
-        # Apply context bonus if matching current context
-        if context_info and context_info.get("current"):
-            context_bonus = self.skills_config.get("intents", {}).get("thresholds", {}).get("context_bonus", 1.0)
-            scores[context_info["current"]] += context_bonus
+    def set_context(self, context: str) -> None:
+        """Set conversation context"""
+        self.context = context
+        self._save_context()
         
-        # Log scoring details
-        print("\n=== Intent Detection ===")
-        print(f"Input: '{text}'")
-        print("Intent Scores:")
-        for intent, score in scores.items():
-            print(f"  {intent:12s}: {score:.2f}")
-        
-        # Record for learning
-        if self.intent_learner:
-            self.intent_learner.learn_from_interaction(text, max(scores.items(), key=lambda x: x[1])[0], True)
-        
-        return scores
-
-    async def route_request(self, text: str, context: Dict) -> Dict:
-        """Route request with learning integration"""
-        try:
-            user_id = context.get("user_id", "default")
-            user_preferences = self.user_manager.get_user_preferences(user_id) if self.user_manager else {}
+    def add_to_history(self, intent: Dict[str, Any]) -> None:
+        """Add intent to history"""
+        # Add timestamp to intent
+        intent['timestamp'] = datetime.now().isoformat()
+        self.history.append(intent)
+        if len(self.history) > self.settings.router["max_history"]:
+            self.history.pop(0)
+        self._save_context()
             
-            # Add user context to request
-            context["user"] = {
-                "preferences": user_preferences,
-                "restrictions": self.user_manager.get_active_restrictions(user_id) if self.user_manager else []
-            }
+    def get_history(self) -> list:
+        """Get conversation history"""
+        return self.history
+        
+    def clear_history(self) -> None:
+        """Clear conversation history"""
+        self.history = []
+        self.context = self.settings.router["default_context"]
+        self._save_context()
+        
+    def route_intent(self, intent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Route intent to appropriate handler"""
+        try:
+            # Add to history
+            self.add_to_history(intent)
             
             # Get current context
-            current_context = await self.context_manager.get_context("current")
+            context = self.get_context()
             
-            # Extract entities with context
-            entities = await self._extract_entities(text)
-            
-            # Score intents with learning
-            intent_scores = self._score_intents(text, current_context)
-            intent_name = max(intent_scores.items(), key=lambda x: x[1])[0]
-            
-            # Update context
-            context_info = await self.context_manager.update_context(text, entities, intent_name)
-            
-            # Use context to determine skill
-            skill_name = context_info.get("current") or intent_name
-            
-            # Log the flow
-            self.logger.log_intent_detection(text, intent_scores, skill_name)
-            
-            # Get response from skill
-            if skill_name in self.skills:
-                response = await self.skills[skill_name].handle(text, context_info)
-                
-                # Record successful interaction for learning
-                if self.learning_manager:
-                    await self.learning_manager.record_exchange({
-                        "text": text,
-                        "intent": intent_name,
-                        "skill": skill_name,
-                        "context": context_info,
-                        "success": True,
-                        "entities": entities
-                    })
-                    
-                return response
+            # Basic routing based on context
+            if context == "general":
+                return self._handle_general(intent)
+            elif context == "help":
+                return self._handle_help(intent)
             else:
-                # Generate contextual response
-                response = await self._generate_contextual_response(text)
-                return {
-                    "text": response,
-                    "context": "education",
-                    "auto_continue": True,
-                    "conversation_active": True
-                }
+                logging.warning(f"Unknown context: {context}")
+                return self._handle_general(intent)
                 
         except Exception as e:
-            print(f"Error in router: {e}")
+            logging.error(f"Error routing intent: {e}")
             return {
-                "text": "I'd be happy to help you learn about that. Could you rephrase your question?",
-                "context": "education",
-                "auto_continue": True,
-                "conversation_active": True
+                "response": "I'm having trouble processing that request. Could you try rephrasing it?",
+                "context": self.settings.router["fallback_context"]
             }
-
-    async def _generate_contextual_response(self, text: str) -> str:
-        """Generate helpful contextual response using OpenAI"""
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.settings.OPENAI_CHAT_MODEL,
-                messages=[
-                    {"role": "system", "content": """
-                    You are a friendly educational assistant.
-                    The user has asked a question that needs clarification.
-                    Generate a response that:
-                    1. Acknowledges their interest in the topic
-                    2. Asks for specific details about what they want to learn
-                    3. Encourages them to ask follow-up questions
-                    Keep the response educational and engaging.
-                    """},
-                    {"role": "user", "content": f"User asked: {text}"}
-                ],
-                temperature=self.settings.MODEL_TEMPERATURE,
-                max_tokens=self.settings.MODEL_MAX_TOKENS
-            )
             
-            return response.choices[0].message.content.strip()
+    def _handle_general(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle general conversation with context awareness"""
+        # Extract question from intent
+        question = intent.get("text", "").strip()
+        
+        if not question:
+            return {
+                "response": "I didn't catch that. Could you repeat your question?",
+                "context": "general"
+            }
             
-        except Exception as e:
-            print(f"Error generating contextual response: {e}")
-            return "I'd love to help you learn about that. Could you give me more details about what you'd like to know?"
-
-    async def _extract_entities(self, text: str) -> List[str]:
-        """Extract entities from text with context awareness"""
-        try:
-            response = await self.client.chat.completions.create(
-                model=self.settings.OPENAI_CHAT_MODEL,
-                messages=[
-                    {"role": "system", "content": """
-                    Extract key entities from the text.
-                    Focus on:
-                    - Topics (food, culture, etc.)
-                    - Places (countries, cities)
-                    - Concepts (history, science)
-                    - Objects (specific items)
-                    Return as comma-separated list.
-                    """},
-                    {"role": "user", "content": text}
-                ],
-                temperature=self.settings.MODEL_TEMPERATURE,
-                max_tokens=self.settings.MODEL_MAX_TOKENS
-            )
-            
-            entities = response.choices[0].message.content.strip().split(',')
-            return [e.strip().lower() for e in entities if e.strip()]
-            
-        except Exception as e:
-            print(f"Error extracting entities: {e}")
-            return []
+        # Get recent context from history
+        recent_context = []
+        for past_intent in self.history[-3:]:  # Look at last 3 interactions
+            if "text" in past_intent:
+                recent_context.append(past_intent["text"])
+        
+        # Detect factual/educational questions
+        educational_indicators = [
+            "what is", "what's", "where is", "who is", "when did",
+            "why does", "how does", "tell me about", "explain",
+            "capital", "country", "city", "history", "science",
+            "math", "calculate", "solve"
+        ]
+        
+        # Check if this is an educational question
+        if any(indicator in question.lower() for indicator in educational_indicators):
+            return {
+                "response": question,
+                "context": "education",
+                "subject": "factual_question",
+                "auto_continue": True
+            }
+        
+        # Handle follow-up questions
+        if question.lower().startswith(("what else", "tell me more", "and")):
+            if self.context == "education":
+                return {
+                    "response": question,
+                    "context": "education",
+                    "subject": "follow_up",
+                    "auto_continue": True
+                }
+        
+        # If no special handling, treat as general conversation
+        return {
+            "response": question,
+            "context": "conversation"
+        }
+        
+    def _handle_help(self, intent: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle help requests"""
+        return {
+            "response": "I can help answer questions and have conversations. Try asking me about facts, " +
+                       "or just chat with me about any topic you're interested in.",
+            "context": "general"
+        }
+        
+    def _get_conversation_context(self) -> Dict[str, Any]:
+        """Get relevant context from conversation history"""
+        context = {
+            "current_context": self.context,
+            "recent_questions": [],
+            "subjects_discussed": set(),
+            "last_response": None
+        }
+        
+        # Analyze recent history
+        for intent in self.history[-5:]:  # Look at last 5 interactions
+            if "text" in intent:
+                context["recent_questions"].append(intent["text"])
+            if "subject" in intent:
+                context["subjects_discussed"].add(intent["subject"])
+            if "response" in intent:
+                context["last_response"] = intent["response"]
+                
+        return context

@@ -1,0 +1,54 @@
+audio:
+  input:
+    device: "hw:CARD=Device_1,DEV=0"
+    device_index: 1
+    rate: 48000
+    channels: 1
+    format: "S16_LE"
+    period_size: 2048
+    chunk_size: 1024
+  output:
+    device: "default"
+    device_index: 0
+    rate: 48000
+    channels: 1
+    format: "S16_LE"
+    period_size: 2048
+    chunk_size: 1024
+
+wake_word:
+  model_path: "models/hey-messy_en_raspberry-pi_v3_0_0.ppn"
+  sensitivity: 0.5
+  volume_threshold: 100
+  max_volume: 4000
+  volume_range:
+    min: 100
+    max: 4000
+
+session:
+  require_reidentification: false
+  timeout: 300  # 5 minutes
+  max_turns: 10
+  idle_timeout: 60  # 1 minute
+
+speech:
+  input_language: "en"
+  output_language: "en-US"
+  voice: "nova"
+  fallback_voice: "alloy"
+  model: "whisper-1"
+  max_tokens: 150
+  temperature: 0.7
+
+learning:
+  enabled: true
+  data_path: "cache/learning/learning.json"
+  pattern_threshold: 3
+  success_threshold: 0.8
+  context_window: 5
+  max_patterns: 1000
+
+router:
+  default_context: "general"
+  fallback_context: "help"
+  max_history: 10

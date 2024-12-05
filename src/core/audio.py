@@ -1,10 +1,10 @@
 """
 Audio Interface for Messi Assistant
 ---------------------------------
-Handles audio I/O operations using PyAudio.
+Handles audio I/O operations using ALSA directly for low latency.
 """
 
-import pyaudio
+import alsaaudio
 import numpy as np
 from typing import Callable, Optional
 import wave
@@ -19,14 +19,14 @@ class AudioInterface:
     def __init__(self):
         # Core initialization
         self.settings = Settings()
-        self.p = None  # Initialize PyAudio only when needed
-        self.stream = None
+        self.input_stream = None
         self.output_stream = None
         
-        # Audio configuration
-        self.input_sample_rate = 48000  # Always use 48kHz
-        self.output_sample_rate = 48000  # Always use 48kHz
-        self.processing_rate = 16000     # Required for Porcupine
+        # Audio configuration from settings
+        self.input_rate = self.settings.audio["input"]["rate"]
+        self.output_rate = self.settings.audio["output"]["rate"]
+        self.processing_rate = self.settings.audio["input"]["processing_rate"]
+        self.period_size = 4096  # Increased for better conversation handling
         
         # Thread and state management
         self.executor = ThreadPoolExecutor(max_workers=2)
@@ -39,6 +39,19 @@ class AudioInterface:
         # Initialize frame sizes after Porcupine is created
         self.frame_length = None
         self.samples_per_frame = None
+        
+        # Pre-allocate resampling arrays
+        self.resample_x = None
+        self.resample_y = None
+        
+        # Ring buffer for command collection
+        self.ring_buffer = np.array([], dtype=np.int16)
+        self.ring_buffer_size = int(self.input_rate * 10)  # Increased to 10 seconds for longer sentences
+        
+        # Debug counters
+        self.frames_processed = 0
+        self.last_debug_time = time.time()
+        self.debug_interval = 5.0  # Print debug every 5 seconds
 
     def __del__(self):
         """Clean up resources"""
@@ -46,28 +59,19 @@ class AudioInterface:
 
     def cleanup(self):
         """Clean up audio resources"""
-        if self.stream:
+        if self.input_stream:
             try:
-                self.stream.stop_stream()
-                self.stream.close()
+                self.input_stream.close()
             except:
                 pass
-            self.stream = None
+            self.input_stream = None
             
         if self.output_stream:
             try:
-                self.output_stream.stop_stream()
                 self.output_stream.close()
             except:
                 pass
             self.output_stream = None
-            
-        if self.p:
-            try:
-                self.p.terminate()
-            except:
-                pass
-            self.p = None
 
     async def initialize(self):
         """Initialize audio interface"""
@@ -76,74 +80,54 @@ class AudioInterface:
             self.cleanup()
             
             print("\nInitializing audio...")
-            self.p = pyaudio.PyAudio()
             
-            # List available devices and find TONOR TM20
-            print("\nLooking for TONOR TM20 device:")
-            device_index = None
+            # List available devices
+            print("\nAvailable PCM capture devices:")
+            for device in alsaaudio.pcms(alsaaudio.PCM_CAPTURE):
+                print(f"  {device}")
             
-            for i in range(self.p.get_device_count()):
-                dev = self.p.get_device_info_by_index(i)
-                print(f"\nDevice {i}:")
-                print(f"    Name: {dev['name']}")
-                print(f"    Max Input Channels: {dev['maxInputChannels']}")
-                print(f"    Max Output Channels: {dev['maxOutputChannels']}")
-                print(f"    Default Sample Rate: {dev['defaultSampleRate']}")
-                if "TONOR TM20" in dev['name']:
-                    device_index = i
-                    print(f"✓ Found TONOR TM20 at index {i}")
+            print("\nAvailable PCM playback devices:")
+            for device in alsaaudio.pcms(alsaaudio.PCM_PLAYBACK):
+                print(f"  {device}")
             
-            if device_index is None:
-                print("❌ Could not find TONOR TM20 device!")
-                return False
+            # Get device names from settings
+            capture_device = self.settings.audio["input"]["device"]
+            playback_device = self.settings.audio["output"]["device"]
+            
+            print(f"\nUsing devices:")
+            print(f"  Capture: {capture_device}")
+            print(f"  Playback: {playback_device}")
             
             # Initialize wake word detector first to get frame requirements
             from core.wake_word import WakeWordDetector
             self.wake_word_detector = WakeWordDetector(self.settings)
             self.frame_length = self.wake_word_detector.porcupine.frame_length
-            self.samples_per_frame = int(self.frame_length * self.input_sample_rate / self.processing_rate)
+            self.samples_per_frame = int(self.frame_length * self.input_rate / self.processing_rate)
             
             print(f"\nAudio Configuration:")
             print(f"Frame length (16kHz): {self.frame_length}")
             print(f"Samples per frame (48kHz): {self.samples_per_frame}")
             print(f"Sample rates:")
-            print(f"  Input: {self.input_sample_rate}Hz")
+            print(f"  Input: {self.input_rate}Hz")
             print(f"  Processing: {self.processing_rate}Hz")
-            print(f"  Output: {self.output_sample_rate}Hz")
+            print(f"  Output: {self.output_rate}Hz")
+            print(f"Period size: {self.period_size} frames")
             
             # Open input stream
             print(f"\nInitializing input stream...")
-            print(f"Using device index: {device_index}")
             
-            try:
-                self.stream = self.p.open(
-                    format=pyaudio.paInt16,
-                    channels=1,
-                    rate=self.input_sample_rate,
-                    input=True,
-                    input_device_index=device_index,
-                    frames_per_buffer=self.samples_per_frame
-                )
-            except Exception as e:
-                print(f"Error opening stream: {e}")
-                print("Trying to terminate and reinitialize PyAudio...")
-                self.cleanup()
-                self.p = pyaudio.PyAudio()
-                self.stream = self.p.open(
-                    format=pyaudio.paInt16,
-                    channels=1,
-                    rate=self.input_sample_rate,
-                    input=True,
-                    input_device_index=device_index,
-                    frames_per_buffer=self.samples_per_frame
-                )
+            self.input_stream = alsaaudio.PCM(
+                type=alsaaudio.PCM_CAPTURE,
+                mode=alsaaudio.PCM_NORMAL,  # Blocking mode
+                device=capture_device,
+                format=alsaaudio.PCM_FORMAT_S16_LE,  # 16-bit signed little-endian
+                channels=self.settings.audio["input"]["channels"],
+                rate=self.input_rate,
+                periodsize=self.period_size
+            )
             
-            if self.stream.is_active():
-                print(f"✓ Audio input initialized at {self.input_sample_rate}Hz")
-                return True
-            
-            print("❌ Failed to initialize audio")
-            return False
+            print("✓ Audio input initialized")
+            return True
             
         except Exception as e:
             print(f"Error initializing audio: {e}")
@@ -176,10 +160,33 @@ class AudioInterface:
         except Exception as e:
             print(f"Error in monitoring loop: {e}")
 
+    def _resample_audio(self, audio_48k):
+        """Resample 48kHz audio to 16kHz using pre-allocated arrays"""
+        try:
+            # Initialize resampling arrays if needed
+            if self.resample_x is None:
+                self.resample_x = np.linspace(0, len(audio_48k) - 1, len(audio_48k))
+                self.resample_y = np.linspace(0, len(audio_48k) - 1, self.frame_length)
+            
+            # Use pre-allocated arrays for faster resampling
+            resampled = np.interp(self.resample_y, self.resample_x[:len(audio_48k)], audio_48k).astype(np.int16)
+            
+            # Ensure exact frame length
+            if len(resampled) > self.frame_length:
+                return resampled[:self.frame_length]
+            elif len(resampled) < self.frame_length:
+                return np.pad(resampled, (0, self.frame_length - len(resampled)))
+            return resampled
+            
+        except Exception as e:
+            print(f"Error in resampling: {e}")
+            return np.zeros(self.frame_length, dtype=np.int16)
+
     async def _monitor_wake_word(self):
         """Monitor audio stream for wake word"""
-        min_volume = 100   # Minimum volume to show activity
-        max_volume = 4000  # Maximum volume before clipping
+        min_volume = self.settings.wake_word["volume_threshold"]
+        max_volume = self.settings.wake_word["max_volume"]
+        buffer = np.array([], dtype=np.int16)  # Buffer for incomplete frames
         
         print("\nListening for wake word 'Hey Messy'...")
         print("Audio levels will be shown below. Speak normally.")
@@ -187,44 +194,67 @@ class AudioInterface:
         while self.running:
             try:
                 # Read audio frame
-                data = self.stream.read(self.samples_per_frame, exception_on_overflow=False)
-                audio = np.frombuffer(data, dtype=np.int16)
-                
-                # Calculate and display volume level
-                volume = np.abs(audio).mean()
-                if volume > max_volume:
-                    meter = "LOUD! 🔊"
-                elif volume > min_volume:
-                    meter_length = int((volume - min_volume) / (max_volume - min_volume) * 30)
-                    meter = "▮" * meter_length
-                else:
-                    meter = "quiet"
-                
-                print(f"\rLevel: {meter:<32} ({volume:>4.0f})", end="", flush=True)
-                
-                # Resample from 48kHz to 16kHz for Porcupine
-                resampled = np.interp(
-                    np.linspace(0, len(audio), self.frame_length),
-                    np.arange(len(audio)),
-                    audio
-                ).astype(np.int16)
-                
-                # Process with wake word detector
-                result = self.wake_word_detector.process_frame(resampled)
-                
-                if result:
-                    print("\n\n🎤 Wake word detected!")
-                    print("Listening for command...")
+                length, data = self.input_stream.read()
+                if length > 0:
+                    # Convert to numpy array and add to buffer
+                    audio = np.frombuffer(data, dtype=np.int16)
+                    buffer = np.concatenate([buffer, audio])
                     
-                    # Collect additional audio for command
-                    command_audio = await self._collect_command_audio()
+                    # Calculate and display volume level
+                    volume = np.abs(audio).mean()
                     
-                    if command_audio and self.wake_word_callback:
-                        await self.wake_word_callback(command_audio)
+                    # Print debug info periodically
+                    current_time = time.time()
+                    if current_time - self.last_debug_time >= self.debug_interval:
+                        print(f"\nDebug Info:")
+                        print(f"  Frames processed: {self.frames_processed}")
+                        print(f"  Current volume: {volume:.0f}")
+                        print(f"  Buffer length: {len(buffer)}")
+                        print(f"  Frame length needed: {self.samples_per_frame}")
+                        print(f"  Min value: {np.min(audio)}")
+                        print(f"  Max value: {np.max(audio)}")
+                        self.last_debug_time = current_time
+                    
+                    # Visual volume meter
+                    if volume > max_volume:
+                        meter = "LOUD! 🔊"
+                    elif volume > min_volume:
+                        meter_length = int((volume - min_volume) / (max_volume - min_volume) * 30)
+                        meter = "▮" * meter_length
                     else:
-                        print("No command detected")
-                        print("\nListening for wake word 'Hey Messy'...")
-                        print("Audio levels will be shown below. Speak normally.")
+                        meter = "quiet"
+                    
+                    print(f"\rLevel: {meter:<32} ({volume:>4.0f})", end="", flush=True)
+                    
+                    # Process complete frames from buffer
+                    while len(buffer) >= self.samples_per_frame:
+                        # Extract frame
+                        frame = buffer[:self.samples_per_frame]
+                        buffer = buffer[self.samples_per_frame:]
+                        
+                        # Resample from 48kHz to 16kHz
+                        resampled = self._resample_audio(frame)
+                        
+                        # Process with wake word detector
+                        result = self.wake_word_detector.process_frame(resampled)
+                        self.frames_processed += 1
+                        
+                        if result:
+                            print("\n\n🎤 Wake word detected!")
+                            print("Listening for command...")
+                            
+                            # Clear buffer
+                            buffer = np.array([], dtype=np.int16)
+                            
+                            # Collect additional audio for command
+                            command_audio = await self._collect_command_audio()
+                            
+                            if command_audio and self.wake_word_callback:
+                                await self.wake_word_callback(command_audio)
+                            else:
+                                print("No command detected")
+                                print("\nListening for wake word 'Hey Messy'...")
+                                print("Audio levels will be shown below. Speak normally.")
                 
             except Exception as e:
                 print(f"\nError reading audio frame: {e}")
@@ -233,129 +263,135 @@ class AudioInterface:
                 await asyncio.sleep(0.1)
                 continue
 
-    async def _get_next_audio_frame(self):
-        """Get audio frame with efficient processing for 48kHz"""
+    async def _collect_command_audio(self):
+        """Collect audio for command processing"""
         try:
-            # Run blocking audio read in executor
-            pcm = await asyncio.get_event_loop().run_in_executor(
-                self.executor,
-                self.stream.read,
-                self.samples_per_frame,
-                False
-            )
-            
-            # Process with numpy for efficiency
-            audio = np.frombuffer(pcm, dtype=np.int16)
-            
-            # Resample 48kHz to 16kHz more efficiently
-            ratio = 16000 / 48000  # Fixed ratio for known rates
-            target_length = int(len(audio) * ratio)
-            indices = np.linspace(0, len(audio)-1, target_length).astype(int)
-            resampled = audio[indices]
-            
-            if len(resampled) > self.frame_length:
-                return resampled[:self.frame_length]
-            return np.pad(resampled, (0, self.frame_length - len(resampled)))
-            
-        except Exception as e:
-            print(f"Error reading audio frame: {e}")
-            return None
-
-    async def _collect_command_audio(self, duration=3.0):
-        """Collect audio for command with better end detection"""
-        try:
-            chunks = []
-            start_time = time.time()
-            silence_duration = 0
-            last_level = 0
-            SILENCE_THRESHOLD = 500  # Adjust based on your mic
-            MAX_SILENCE = 0.5  # Maximum silence before cutting off
-            
+            record_start = time.time()
             print("\nRecording command...")
             print("Speak your command. Recording will stop after silence.")
             
-            while time.time() - start_time < duration:
-                data = self.stream.read(self.samples_per_frame, exception_on_overflow=False)
-                chunks.append(data)
-                
-                # Calculate audio level
-                audio = np.frombuffer(data, dtype=np.int16)
-                level = np.abs(audio).mean()
-                
-                # Detect sentence completion
-                if level < SILENCE_THRESHOLD:
-                    silence_duration += self.samples_per_frame / self.input_sample_rate
-                    if silence_duration > MAX_SILENCE and last_level > SILENCE_THRESHOLD:
-                        print("\nDetected end of command")
-                        break
-                else:
-                    silence_duration = 0
-                
-                last_level = level
-                
-                # Visual feedback
-                meter_length = int(level/100)
-                if meter_length > 30:
-                    meter = "LOUD! 🔊"
-                else:
-                    meter = "▮" * meter_length
-                print(f"\rLevel: {meter:<32} ({level:>4.0f})", end="", flush=True)
-                
-                await asyncio.sleep(0.001)
+            # Initialize variables for silence detection
+            silence_start = None
+            # Default values if not in settings
+            silence_threshold = self.settings.audio["input"].get("silence_threshold", 500)  # Default threshold
+            silence_duration = self.settings.audio["input"].get("silence_duration", 0.5)    # Default 0.5 seconds
             
-            print("\nProcessing command...")
+            print(f"\nSilence Detection Parameters:")
+            print(f"  Threshold: {silence_threshold}")
+            print(f"  Duration: {silence_duration}s")
             
-            # Combine chunks
-            if chunks:
-                return b''.join(chunks)
-            else:
-                print("No audio collected")
-                return None
-                
+            # Clear ring buffer at start of command
+            self.ring_buffer = np.array([], dtype=np.int16)
+            
+            # Record until silence
+            while True:
+                length, data = self.input_stream.read()
+                if length > 0:
+                    # Convert to numpy array
+                    audio = np.frombuffer(data, dtype=np.int16)
+                    
+                    # Calculate volume
+                    volume = np.abs(audio).mean()
+                    
+                    # Visual volume meter
+                    meter_length = int(volume / 100)
+                    meter = "▮" * min(meter_length, 30)
+                    print(f"\rLevel: {meter:<32} ({volume:>4.0f})", end="", flush=True)
+                    
+                    # Add to ring buffer
+                    self.ring_buffer = np.concatenate([self.ring_buffer, audio])
+                    
+                    # Trim buffer if too long
+                    if len(self.ring_buffer) > self.ring_buffer_size:
+                        self.ring_buffer = self.ring_buffer[-self.ring_buffer_size:]
+                    
+                    # Check for silence
+                    if volume < silence_threshold:
+                        if silence_start is None:
+                            silence_start = time.time()
+                        elif time.time() - silence_start > silence_duration:
+                            record_time = time.time() - record_start
+                            print(f"\n⏱️  Recording time: {record_time*1000:.1f}ms")
+                            audio_data = self.ring_buffer.tobytes()
+                            # Clear ring buffer after command
+                            self.ring_buffer = np.array([], dtype=np.int16)
+                            return audio_data
+                    else:
+                        silence_start = None
+                        
         except Exception as e:
             print(f"Error collecting command audio: {e}")
+            traceback.print_exc()
+            return None
+
+    async def play_audio_chunk(self, audio_data: bytes) -> None:
+        """Play audio chunk with fallback device handling"""
+        try:
+            # Inspect WAV file properties
+            with wave.open(io.BytesIO(audio_data), 'rb') as wf:
+                wav_channels = wf.getnchannels()
+                wav_rate = wf.getframerate()
+                wav_width = wf.getsampwidth()
+                print(f"\nWAV file properties:")
+                print(f"  Sample rate: {wav_rate}Hz")
+                print(f"  Channels: {wav_channels}")
+                print(f"  Sample width: {wav_width} bytes")
+            
+            # Try to initialize output stream if needed
+            if not self.output_stream:
+                # Get device settings from config
+                output_config = self.settings.audio["output"]
+                device = output_config["device"]
+                
+                # Fallback devices if primary fails
+                playback_devices = [
+                    device,
+                    "hw:3,0",
+                    "default"
+                ]
+                
+                # Try each device until one works
+                for device in playback_devices:
+                    try:
+                        print(f"\nTrying audio device: {device}")
+                        # Use WAV file's native rate instead of config
+                        self.output_stream = alsaaudio.PCM(
+                            type=alsaaudio.PCM_PLAYBACK,
+                            mode=alsaaudio.PCM_NORMAL,
+                            device=device,
+                            format=alsaaudio.PCM_FORMAT_S16_LE,
+                            channels=wav_channels,
+                            rate=wav_rate,  # Use WAV file's rate
+                            periodsize=output_config["period_size"]
+                        )
+                        print(f"✓ Using audio device: {device}")
+                        print(f"  Sample rate: {wav_rate}Hz")
+                        print(f"  Channels: {wav_channels}")
+                        break
+                    except alsaaudio.ALSAAudioError as e:
+                        print(f"Could not open {device}: {e}")
+                        continue
+                
+                if not self.output_stream:
+                    raise RuntimeError("No available audio output devices found")
+            
+            # Play the audio directly
+            self.output_stream.write(audio_data)
+            
+        except Exception as e:
+            print(f"Error during playback: {e}")
             if hasattr(e, '__traceback__'):
                 traceback.print_exc()
-            return None
+            
+            # Reset output stream on error
+            if self.output_stream:
+                try:
+                    self.output_stream.close()
+                except:
+                    pass
+                self.output_stream = None
 
     async def stop(self):
         """Stop audio processing"""
         self.running = False
         self.cleanup()
-
-    async def play_audio_chunk(self, audio_data: bytes) -> None:
-        """Play an audio chunk of raw PCM data"""
-        try:
-            # Configure output stream if not already configured
-            if not hasattr(self, 'output_stream') or self.output_stream is None:
-                output_rate = 48000  # Always use 48kHz
-                chunk_size = self.settings.audio["output"]["chunk_size"]
-                print(f"\nInitializing output stream:")
-                print(f"  Rate: {output_rate}Hz")
-                print(f"  Chunk size: {chunk_size} samples")
-                print(f"  Format: 16-bit PCM")
-                print(f"  Channels: 1 (mono)")
-                print(f"  Device index: {self.settings.audio['output']['device_index']}")
-                
-                self.output_stream = self.p.open(
-                    format=pyaudio.paInt16,  # Assuming 16-bit audio
-                    channels=1,              # Mono audio
-                    rate=output_rate,        # Always 48kHz
-                    output=True,
-                    output_device_index=self.settings.audio["output"]["device_index"],
-                    frames_per_buffer=chunk_size
-                )
-            
-            # Write the audio data in chunks
-            if len(audio_data) > 0:
-                print(f"Writing {len(audio_data)} bytes to output stream")
-                chunk_size = 1024
-                for i in range(0, len(audio_data), chunk_size):
-                    chunk = audio_data[i:i + chunk_size]
-                    self.output_stream.write(chunk)
-            
-        except Exception as e:
-            print(f"Error during playback: {e}")
-            if hasattr(e, '__traceback__'):
-                import traceback
-                traceback.print_exc()
