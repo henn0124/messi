@@ -99,22 +99,11 @@ class UserManager:
             return False
     
     def get_user_preferences(self, user_id: str) -> Dict:
-        """Get user preferences and settings"""
+        """Get user preferences"""
         try:
-            user = self.users["users"].get(user_id)
-            if not user:
-                return {}
-                
-            profile_type = user.get("type", "child")
-            profile_settings = self.config["users"]["profiles"].get(profile_type, {})
-            
-            return {
-                "preferences": user.get("preferences", {}),
-                "restrictions": user.get("restrictions", []),
-                "features": profile_settings.get("features", []),
-                "content_filters": profile_settings.get("content_filters", [])
-            }
-            
+            if user_id in self.users["users"]:
+                return self.users["users"][user_id].get("preferences", {})
+            return self.users["users"]["default"]["preferences"]
         except Exception as e:
             self.logger.log_error("user_manager", e, {"context": "get_preferences"})
             return {}
@@ -129,20 +118,11 @@ class UserManager:
             self.logger.log_error("user_manager", e, {"context": "update_activity"})
     
     def get_active_restrictions(self, user_id: str) -> List[str]:
-        """Get active restrictions for user"""
+        """Get active user restrictions"""
         try:
-            user = self.users["users"].get(user_id)
-            if not user:
-                return []
-                
-            profile_type = user.get("type", "child")
-            profile_settings = self.config["users"]["profiles"].get(profile_type, {})
-            
-            restrictions = user.get("restrictions", []).copy()
-            restrictions.extend(profile_settings.get("content_filters", []))
-            
-            return list(set(restrictions))  # Remove duplicates
-            
+            if user_id in self.users["users"]:
+                return self.users["users"][user_id].get("restrictions", [])
+            return []
         except Exception as e:
             self.logger.log_error("user_manager", e, {"context": "get_restrictions"})
             return [] 

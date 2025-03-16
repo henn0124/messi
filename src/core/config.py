@@ -3,7 +3,8 @@ from pathlib import Path
 import yaml
 import os
 from pydantic import BaseModel, Field
-from typing import Dict
+from typing import Dict, Optional
+import traceback
 
 class LearningConfig(BaseModel):
     """Learning system configuration"""
@@ -20,225 +21,129 @@ class LearningConfig(BaseModel):
         "logs_path": "logs/learning_updates.log"
     }
 
+class LoggingHandlerConfig(BaseModel):
+    """Logging handler configuration"""
+    enabled: bool = True
+    path: str = "messi.log"
+    level: str = "INFO"
+
+class LoggingHandlers(BaseModel):
+    """Logging handlers configuration"""
+    file: LoggingHandlerConfig = Field(default_factory=LoggingHandlerConfig)
+    console: LoggingHandlerConfig = Field(default_factory=lambda: LoggingHandlerConfig(path=""))
+
+class LoggingConfig(BaseModel):
+    """Logging configuration"""
+    level: str = "INFO"
+    format: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    file_rotation: str = "1 MB"
+    backup_count: int = 5
+    handlers: LoggingHandlers = Field(default_factory=LoggingHandlers)
+
+class ModelConfig(BaseModel):
+    """Model configuration"""
+    chat: str = "gpt-4-1106-preview"
+    whisper: str = "whisper-1"
+    tts: str = "tts-1"
+    tts_voice: str = "alloy"
+    tts_fallback: str = "nova"
+    tts_speed: float = 1.0
+    temperature: float = 0.7
+    max_tokens: int = 150
+
 class Settings(BaseSettings):
     """Application settings loaded from .env and config.yaml"""
     
-    # Add learning config to model
+    # API Keys (from .env)
+    OPENAI_API_KEY: str = Field(..., env="OPENAI_API_KEY")
+    PICOVOICE_ACCESS_KEY: str = Field(..., env="PICOVOICE_ACCESS_KEY")
+    BASE_DIR: str = Field(..., env="BASE_DIR")
+    
+    # Model configuration
+    models: ModelConfig = Field(default_factory=ModelConfig)
+    
+    # Learning configuration  
     learning: LearningConfig = Field(default_factory=LearningConfig)
     
-    # Add user config to model
-    user_config: Dict = {}
+    # Logging configuration
+    logging: LoggingConfig = Field(default_factory=LoggingConfig)
     
-    # Add raw audio config
+    # Cache directory
+    CACHE_DIR: str = Field(default="cache")
+    
+    # Audio configuration (will be loaded from config.yaml)
     audio: Dict = Field(default_factory=dict)
     
-    # Add router config
-    router: Dict = Field(default_factory=lambda: {
-        "default_context": "general",
-        "fallback_context": "help",
-        "max_history": 10
-    })
+    # Wake word configuration (will be loaded from config.yaml)
+    wake_word: Dict = Field(default_factory=dict)
     
-    # Add wake word config
-    wake_word: Dict = Field(default_factory=lambda: {
-        "name": "hey messy",
-        "model_path": "models/hey-messy_en_raspberry-pi_v3_0_0.ppn",
-        "sensitivity": 0.5,
-        "volume_threshold": 100,
-        "max_volume": 4000,
-        "detection_window": 1.0,
-        "consecutive_frames": 1,
-        "retry_count": 5
-    })
-    
-    # Directory Settings (from .env)
-    BASE_DIR: Path = Path("/home/pi/messi")
-    CACHE_DIR: Path = BASE_DIR / "cache"
-    MODELS_DIR: Path = BASE_DIR / "models"
-    TEMP_DIR: Path = BASE_DIR / "temp"
-    LOG_DIR: Path = BASE_DIR / "logs"
-    
-    # Add default for wake word model path
-    WAKE_WORD_MODEL_PATH: Path = MODELS_DIR / "hey-messy_en_raspberry-pi_v3_0_0.ppn"
-    
-    # Sensitive Settings (from .env)
-    OPENAI_API_KEY: str
-    PICOVOICE_ACCESS_KEY: str
-    
-    # Model Settings (with defaults)
-    OPENAI_CHAT_MODEL: str = "gpt-4-1106-preview"
-    OPENAI_WHISPER_MODEL: str = "whisper-1"
-    OPENAI_TTS_MODEL: str = "tts-1"
-    OPENAI_TTS_VOICE: str = "fable"
+    # Model settings (derived from models config)
+    OPENAI_CHAT_MODEL: str = ""
+    OPENAI_WHISPER_MODEL: str = ""
+    OPENAI_TTS_MODEL: str = ""
+    OPENAI_TTS_VOICE: str = ""
+    OPENAI_TTS_FALLBACK_VOICE: str = ""
     OPENAI_TTS_SPEED: float = 1.0
-    MODEL_TEMPERATURE: float = 0.7
-    MODEL_MAX_TOKENS: int = 4096
+    OPENAI_TEMPERATURE: float = 0.7
+    OPENAI_MAX_TOKENS: int = 150
     
-    # Audio Settings (with defaults)
-    AUDIO_INPUT_DEVICE_INDEX: int = 1
-    AUDIO_OUTPUT_DEVICE_INDEX: int = 0
-    AUDIO_NATIVE_RATE: int = 44100
-    AUDIO_PROCESSING_RATE: int = 16000
-    AUDIO_OUTPUT_RATE: int = 24000
-    AUDIO_CHANNELS: int = 1
-    AUDIO_CHUNK_SIZE: int = 1024
-    AUDIO_BUFFER_SIZE: int = 8192
-    AUDIO_PRE_EMPHASIS: float = 0.97
-    AUDIO_SILENCE_THRESHOLD: int = 90
-    
-    # Wake Word Settings (with defaults)
-    WAKE_WORD: str = "hey messy"
-    WAKE_WORD_THRESHOLD: float = 0.75
-    WAKE_WORD_MIN_VOLUME: int = 100
-    WAKE_WORD_MAX_VOLUME: int = 385
-    WAKE_WORD_DETECTION_WINDOW: float = 2.0
-    WAKE_WORD_CONSECUTIVE_FRAMES: int = 1
-    
-    # Command Settings (with defaults)
-    COMMAND_MIN_DURATION: float = 0.5
-    COMMAND_MAX_DURATION: float = 10.0
-    COMMAND_MIN_VOLUME: int = 90
-    COMMAND_SILENCE_TIMEOUT: float = 0.5
-    COMMAND_PRE_BUFFER: float = 0.1
-    COMMAND_MAX_SILENCE_CHUNKS: int = 20
+    # Wake word settings (will be set from wake_word config)
+    WAKE_WORD_MODEL_PATH: str = ""
+    WAKE_WORD_SENSITIVITY: Optional[float] = None
+    WAKE_WORD_VOLUME_THRESHOLD: Optional[int] = None
+    WAKE_WORD_MAX_VOLUME: Optional[int] = None
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
-        # Load YAML config
-        config = self._load_yaml_config()
-        
-        # Update settings from YAML
-        self._update_from_yaml(config)
-        
-        # Load user config
-        self._load_user_config()
-        
-        # Create directories
-        self._create_directories()
-        
-        # Set derived paths
-        self.WAKE_WORD_MODEL_PATH = self.MODELS_DIR / config.get('wake_word', {}).get(
-            'model_name', 'hey-messy_en_raspberry-pi_v3_0_0.ppn'
-        )
-        
-        # Add debug prints
-        print(f"\nDebug - Config Paths:")
-        print(f"BASE_DIR: {self.BASE_DIR}")
-        print(f"MODELS_DIR: {self.MODELS_DIR}")
-        print(f"Expected Wake Word Model: {self.WAKE_WORD_MODEL_PATH}")
-        print(f"Final Wake Word Model Path: {self.WAKE_WORD_MODEL_PATH}")
-        print(f"Model exists: {self.WAKE_WORD_MODEL_PATH.exists()}")
-        
-        # Update learning config from YAML
-        learning_config = config.get("learning", {})
-        self.learning = LearningConfig(
-            enabled=learning_config.get("enabled", True),
-            parameters=learning_config.get("parameters", self.learning.parameters),
-            storage=learning_config.get("storage", self.learning.storage)
-        )
-
-    def _load_yaml_config(self) -> dict:
+        self._load_yaml_config()
+    
+    def _load_yaml_config(self):
         """Load configuration from YAML file"""
-        config_path = Path(__file__).parent.parent.parent / "config" / "config.yaml"
         try:
-            if config_path.exists():
-                with open(config_path, 'r') as f:
-                    return yaml.safe_load(f)
-            return {}
+            config_path = Path(self.BASE_DIR) / "config" / "config.yaml"
+            if not config_path.exists():
+                print(f"Warning: Config file not found at {config_path}")
+                return
+                
+            with open(config_path) as f:
+                config = yaml.safe_load(f)
+                
+            # Update configurations from YAML
+            if "models" in config:
+                self.models = ModelConfig(**config["models"])
+                # Set model settings
+                self.OPENAI_CHAT_MODEL = self.models.chat
+                self.OPENAI_WHISPER_MODEL = self.models.whisper
+                self.OPENAI_TTS_MODEL = self.models.tts
+                self.OPENAI_TTS_VOICE = self.models.tts_voice
+                self.OPENAI_TTS_FALLBACK_VOICE = self.models.tts_fallback
+                self.OPENAI_TTS_SPEED = self.models.tts_speed
+                self.OPENAI_TEMPERATURE = self.models.temperature
+                self.OPENAI_MAX_TOKENS = self.models.max_tokens
+                
+            if "audio" in config:
+                self.audio = config["audio"]
+                
+            if "wake_word" in config:
+                # Don't override API key from .env
+                wake_word_config = config["wake_word"].copy()
+                if "access_key" in wake_word_config:
+                    del wake_word_config["access_key"]
+                self.wake_word = wake_word_config
+                
+                # Set wake word settings
+                if "model_path" in wake_word_config:
+                    self.WAKE_WORD_MODEL_PATH = str(Path(self.BASE_DIR) / wake_word_config["model_path"])
+                self.WAKE_WORD_SENSITIVITY = wake_word_config.get("sensitivity")
+                self.WAKE_WORD_VOLUME_THRESHOLD = wake_word_config.get("volume_threshold")
+                self.WAKE_WORD_MAX_VOLUME = wake_word_config.get("max_volume")
+                
         except Exception as e:
-            print(f"Error loading config: {e}")
-            return {}
-
-    def _update_from_yaml(self, config: dict):
-        """Update settings from YAML config"""
-        if 'models' in config:
-            self.OPENAI_CHAT_MODEL = config['models'].get('chat', self.OPENAI_CHAT_MODEL)
-            self.OPENAI_WHISPER_MODEL = config['models'].get('whisper', self.OPENAI_WHISPER_MODEL)
-            self.OPENAI_TTS_MODEL = config['models'].get('tts', self.OPENAI_TTS_MODEL)
-            self.OPENAI_TTS_VOICE = config['models'].get('tts_voice', self.OPENAI_TTS_VOICE)
-            self.OPENAI_TTS_SPEED = float(config['models'].get('tts_speed', self.OPENAI_TTS_SPEED))
-            self.MODEL_TEMPERATURE = float(config['models'].get('temperature', self.MODEL_TEMPERATURE))
-            self.MODEL_MAX_TOKENS = int(config['models'].get('max_tokens', self.MODEL_MAX_TOKENS))
-        
-        if 'router' in config:
-            self.router = config['router']
-            
-        if 'wake_word' in config:
-            self.wake_word = config['wake_word']
-            
-        if 'audio' in config:
-            audio_input = config['audio'].get('input', {})
-            audio_output = config['audio'].get('output', {})
-            
-            # Input settings
-            self.AUDIO_INPUT_DEVICE_INDEX = int(audio_input.get('device_index', self.AUDIO_INPUT_DEVICE_INDEX))
-            self.AUDIO_NATIVE_RATE = int(audio_input.get('native_rate', self.AUDIO_NATIVE_RATE))
-            self.AUDIO_PROCESSING_RATE = int(audio_input.get('processing_rate', self.AUDIO_PROCESSING_RATE))
-            self.AUDIO_CHANNELS = int(audio_input.get('channels', self.AUDIO_CHANNELS))
-            self.AUDIO_CHUNK_SIZE = int(audio_input.get('chunk_size', self.AUDIO_CHUNK_SIZE))
-            self.AUDIO_BUFFER_SIZE = int(audio_input.get('buffer_size', self.AUDIO_BUFFER_SIZE))
-            self.AUDIO_PRE_EMPHASIS = float(audio_input.get('pre_emphasis', self.AUDIO_PRE_EMPHASIS))
-            self.AUDIO_SILENCE_THRESHOLD = int(audio_input.get('silence_threshold', self.AUDIO_SILENCE_THRESHOLD))
-            
-            # Output settings
-            self.AUDIO_OUTPUT_DEVICE_INDEX = int(audio_output.get('device_index', self.AUDIO_OUTPUT_DEVICE_INDEX))
-            self.AUDIO_OUTPUT_RATE = int(audio_output.get('rate', self.AUDIO_OUTPUT_RATE))
-            
-            # Store raw config for compatibility
-            self.audio = config['audio']
-
-        if 'command' in config:
-            command = config['command']
-            self.COMMAND_MIN_DURATION = float(command.get('min_duration', self.COMMAND_MIN_DURATION))
-            self.COMMAND_MAX_DURATION = float(command.get('max_duration', self.COMMAND_MAX_DURATION))
-            self.COMMAND_MIN_VOLUME = int(command.get('min_volume', self.COMMAND_MIN_VOLUME))
-            self.COMMAND_SILENCE_TIMEOUT = float(command.get('silence_timeout', self.COMMAND_SILENCE_TIMEOUT))
-            self.COMMAND_PRE_BUFFER = float(command.get('pre_buffer', self.COMMAND_PRE_BUFFER))
-            self.COMMAND_MAX_SILENCE_CHUNKS = int(command.get('max_silence_chunks', self.COMMAND_MAX_SILENCE_CHUNKS))
-
-    def _create_directories(self):
-        """Create necessary directories"""
-        directories = [
-            self.CACHE_DIR,
-            self.MODELS_DIR, 
-            self.TEMP_DIR,
-            self.LOG_DIR,
-            Path("data"),
-            Path("config"),
-            self.CACHE_DIR / "learning",
-            self.CACHE_DIR / "tts",
-            self.CACHE_DIR / "responses"
-        ]
-        
-        for directory in directories:
-            directory.mkdir(parents=True, exist_ok=True)
-
-    def validate_paths(self):
-        """Validate that required files exist"""
-        if not self.WAKE_WORD_MODEL_PATH.exists():
-            raise FileNotFoundError(f"Wake word model not found at: {self.WAKE_WORD_MODEL_PATH}")
-
-    def _load_user_config(self):
-        """Load user configuration"""
-        try:
-            user_config_path = Path("config/user_config.yaml")
-            if user_config_path.exists():
-                with open(user_config_path) as f:
-                    self.user_config = yaml.safe_load(f)
-            else:
-                print("Warning: No user_config.yaml found, using defaults")
-                self.user_config = {
-                    "session": {
-                        "require_reidentification": False,
-                        "timeout_minutes": 30
-                    }
-                }
-        except Exception as e:
-            print(f"Error loading user config: {e}")
-            self.user_config = {
-                "session": {
-                    "require_reidentification": False,
-                    "timeout_minutes": 30
-                }
-            }
+            print(f"Error loading YAML config: {e}")
+            traceback.print_exc()
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = False  # Allow case-insensitive env var names
+        extra = "allow"  # Allow extra fields from environment

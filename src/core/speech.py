@@ -11,8 +11,8 @@ from pathlib import Path
 import json
 
 class SpeechManager:
-    def __init__(self):
-        self.settings = Settings()
+    def __init__(self, settings: Settings):
+        self.settings = settings
         print(f"SpeechManager initializing with API key starting with: {self.settings.OPENAI_API_KEY[:10]}...")
         self.client = AsyncOpenAI(
             api_key=self.settings.OPENAI_API_KEY,
@@ -70,13 +70,13 @@ class SpeechManager:
             wav_buffer.seek(0)
             print("\n🎤 Sending to Whisper API...")
             print(f"API Request:")
-            print(f"  Model: {self.settings.OPENAI_WHISPER_MODEL}")
+            print(f"  Model: {self.settings.models.whisper}")
             print(f"  Language: en")
             print(f"  Audio duration: {len(audio_np) / self.settings.audio['input']['rate']:.1f}s")
             print(f"  Audio size: {len(wav_buffer.getvalue()) / 1024:.1f}KB")
             
             response = await self.client.audio.transcriptions.create(
-                model=self.settings.OPENAI_WHISPER_MODEL,
+                model=self.settings.models.whisper,
                 file=('audio.wav', wav_buffer),
                 response_format="text",
                 language="en"
@@ -101,17 +101,8 @@ class SpeechManager:
                         'trimmed_samples': len(audio_np),
                         'duration': len(audio_np) / self.settings.audio["input"]["rate"]
                     },
-                    'timing': {
-                        'pcm_conversion_ms': (t1-t0)*1000,
-                        'wav_creation_ms': (t2-t1)*1000,
-                        'whisper_api_ms': (t3-t2)*1000,
-                        'total_ms': total_time*1000
-                    },
-                    'api': {
-                        'model': self.settings.OPENAI_WHISPER_MODEL,
-                        'language': 'en',
-                        'audio_duration': len(audio_np) / self.settings.audio["input"]["rate"],
-                        'audio_size': len(wav_buffer.getvalue())
+                    'processing': {
+                        'total_time_ms': total_time * 1000
                     }
                 }
                 with open(self.latest_meta, 'w') as f:
@@ -126,3 +117,66 @@ class SpeechManager:
             print(f"\n✗ Error in Whisper processing: {e}")
             traceback.print_exc()
             return None
+        
+    async def speak(self, text: str) -> None:
+        """Convert text to speech using OpenAI's TTS API and play it"""
+        try:
+            print(f"\n🔊 Converting to speech: {text[:50]}...")
+            
+            # Get speech audio from OpenAI in WAV format
+            response = await self.client.audio.speech.create(
+                model="tts-1",
+                voice="alloy",
+                input=text,
+                response_format="wav"  # Request WAV format for lower latency
+            )
+            
+            # Get the audio data (WAV format)
+            audio_data = response.content
+            
+            # Save to WAV file
+            output_file = self.cache_dir / "tts_output.wav"
+            with open(output_file, "wb") as f:
+                f.write(audio_data)
+            
+            print(f"📝 Saved TTS audio to: {output_file}")
+            
+            # Play audio using aplay
+            import subprocess
+            print("Playing audio...")
+            
+            # Try different playback methods in sequence
+            playback_devices = [
+                "plughw:CARD=Device_1,DEV=0",  # USB device
+                "plughw:CARD=Headphones,DEV=0",  # Built-in audio
+                "sysdefault:CARD=Device_1",  # Another format for USB
+                "default"  # System default
+            ]
+            
+            for device in playback_devices:
+                try:
+                    print(f"Trying playback on device: {device}")
+                    # Use -v flag for verbose output
+                    result = subprocess.run(
+                        ["aplay", "-v", "-D", device, str(output_file)],
+                        capture_output=True,
+                        text=True,
+                        timeout=5  # 5 second timeout
+                    )
+                    if result.returncode == 0:
+                        print(f"✓ Playback successful on {device}")
+                        return
+                    else:
+                        print(f"Error on {device}: {result.stderr}")
+                except subprocess.TimeoutExpired:
+                    print(f"Timeout on device {device}")
+                    continue
+                except Exception as e:
+                    print(f"Error on {device}: {str(e)}")
+                    continue
+            
+            raise Exception("All playback attempts failed")
+            
+        except Exception as e:
+            print(f"Error generating speech: {str(e)}")
+            traceback.print_exc()

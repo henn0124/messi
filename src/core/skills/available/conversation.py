@@ -4,8 +4,8 @@ from ...config import Settings
 import time
 
 class ConversationSkill:
-    def __init__(self):
-        self.settings = Settings()
+    def __init__(self, settings: Settings):
+        self.settings = settings
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
         
         self.personality = {

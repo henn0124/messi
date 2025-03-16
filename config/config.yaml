@@ -13,86 +13,45 @@ models:
 audio:
   input:
     # ALSA device settings
-    device: "plughw:CARD=Device_1,DEV=0"    # TONOR TM20 Audio Device
+    device: "hw:3,0"                    # TONOR TM20 Audio Device
     format: "S16_LE"                    # 16-bit signed little-endian
-    rate: 48000                         # Sample rate (48kHz)
+    rate: 16000                         # Sample rate (16kHz) for Porcupine
     channels: 1                         # Mono input
-    period_size: 2048                   # ALSA buffer period size
+    period_size: 512                    # Smaller period size for wake word detection
     
     # Processing settings
-    processing_rate: 16000              # Rate for Whisper/Porcupine (16kHz)
-    silence_threshold: 1285             # Volume level to detect silence
-    silence_duration: 0.5               # Duration of silence to end recording (seconds)
-    pre_emphasis: 0.5                   # High-frequency boost
+    silence_threshold: 152              # Volume level to detect silence
+    silence_duration: 0.5               # Duration of silence to end recording
 
   output:
     # ALSA device settings
-    device: "plughw:CARD=Device,DEV=0"  # USB Speaker (Card 3)
+    device: "plughw:4,0"                # USB2.0 Device Audio (using plughw for automatic format conversion)
     format: "S16_LE"                    # 16-bit signed little-endian
     rate: 48000                         # Sample rate (48kHz)
     channels: 1                         # Mono output
-    period_size: 2048                   # ALSA buffer period size
-    
-    # Volume control
-    volume: 1.0                         # Output volume multiplier
+    period_size: 16384                  # Large period size to prevent underruns
+    buffer_size: 65536                  # Very large buffer for stability
 
 # Wake Word Settings
 wake_word:
-  name: "hey messy"
-  model_path: "models/hey-messy_en_raspberry-pi_v3_0_0.ppn"
-  sensitivity: 0.5                    # Detection sensitivity (0.0-1.0)
-  
-  # Volume thresholds
-  volume_threshold: 1542              # Minimum volume for wake word detection
-  max_volume: 5182                    # Maximum volume before clipping
-  
-  # Detection parameters
-  detection_window: 1.0               # Time window in seconds
-  consecutive_frames: 1               # Required detections
-  retry_count: 5                      # Retries on failure
+  access_key: "${PICOVOICE_ACCESS_KEY}"  # Set in .env file
+  sensitivity: 0.8                      # Wake word detection sensitivity (0-1)
 
-# Session Settings
-session:
-  require_reidentification: false     # Whether to verify user between sessions
-  timeout: 300                        # Session timeout (5 minutes)
-  max_turns: 10                       # Maximum conversation turns
-  idle_timeout: 60                    # Idle timeout (1 minute)
+# Voice Settings (Elevenlabs)
+voice:
+  api_key: "${ELEVENLABS_API_KEY}"      # Set in .env file
+  agent_id: "${ELEVENLABS_AGENT_ID}"    # Set in .env file
 
-# Speech Settings
-speech:
-  input_language: "en"                # Input language
-  output_language: "en-US"            # Output language
-  voice: "nova"                       # Primary TTS voice
-  fallback_voice: "alloy"            # Fallback TTS voice
-  model: "whisper-1"                  # Speech recognition model
-  max_tokens: 150                     # Maximum response length
-  temperature: 0.7                    # Response randomness
-
-# Learning Settings
-learning:
-  enabled: true                       # Toggle learning system
-  
-  # Learning parameters
-  pattern_threshold: 3                # Minimum patterns for learning
-  success_threshold: 0.8              # Required success rate
-  context_window: 5                   # Context history size
-  max_patterns: 1000                  # Maximum stored patterns
-  
-  # Storage paths
-  data_path: "cache/learning/learning.json"
-
-# Router Settings
-router:
-  default_context: "general"          # Default conversation context
-  fallback_context: "help"            # Context when errors occur
-  max_history: 10                     # Maximum conversation history
+# Cache Settings
+cache:
+  max_age: 24                          # Maximum cache age in hours
 
 # Logging Settings
 logging:
-  level: INFO
-  file_rotation: "1 MB"
+  level: "INFO"
+  file: "logs/messi.log"
+  max_size: "1MB"
   backup_count: 5
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
 # Notes:
 # - Audio uses ALSA (Advanced Linux Sound Architecture) directly

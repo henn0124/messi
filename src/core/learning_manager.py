@@ -91,8 +91,8 @@ class LearningManager:
             self.learning_file.parent.mkdir(parents=True, exist_ok=True)
             self.config_file.parent.mkdir(parents=True, exist_ok=True)
             
-            # Initialize data
-            self._initialize_learning_data()
+            # Initialize data synchronously
+            self._load_learning_data()
             
             print(f"Learning system initialized with data at: {self.learning_file}")
         else:
@@ -105,22 +105,44 @@ class LearningManager:
             "transitions": {}
         }
     
-    async def initialize(self):
-        """Initialize async components"""
+    def _load_learning_data(self):
+        """Load learning data synchronously"""
         try:
+            if self.learning_file.exists():
+                with open(self.learning_file, 'r') as f:
+                    data = json.load(f)
+                    self.learning_data = data
+                    self.patterns = data.get("patterns", self.patterns)
+                    self.metrics = data.get("metrics", self.metrics)
+        except Exception as e:
+            print(f"Error loading learning data: {e}")
+            # Use default data initialized in __init__
+    
+    async def initialize(self):
+        """Async initialization method"""
+        if self.learning_enabled:
             # Initialize async queue
             self.learning_queue = asyncio.Queue()
             
-            # Load initial data
-            if self.learning_enabled:
-                await self._initialize_learning_components()
-                
-            print("Learning system async components initialized")
-            return True
+            # Load data and config
+            await self._initialize_learning_data()
+            await self._load_dynamic_config()
             
+            print("Loaded learning data with", len(self.patterns.get("context_transitions", {})), "patterns")
+    
+    async def _initialize_learning_data(self):
+        """Initialize learning data asynchronously"""
+        try:
+            if self.learning_file.exists():
+                async with aiofiles.open(self.learning_file, 'r') as f:
+                    content = await f.read()
+                    data = json.loads(content)
+                    self.learning_data = data
+                    self.patterns = data.get("patterns", self.patterns)
+                    self.metrics = data.get("metrics", self.metrics)
         except Exception as e:
-            print(f"Error initializing learning system: {e}")
-            return False
+            print(f"Error initializing learning data: {e}")
+            # Use default data initialized in __init__
     
     async def record_exchange(self, exchange_data: Dict):
         """Queue exchange data for processing during downtime"""
@@ -918,33 +940,31 @@ class LearningManager:
             return {}
     
     def _load_learning_config(self) -> Dict:
-        """Load learning configuration from YAML"""
+        """Load learning configuration"""
         try:
-            config_path = Path("config/learning.yaml")
-            if config_path.exists():
-                with open(config_path, 'r') as f:
-                    return yaml.safe_load(f)
-            else:
-                print("Learning config not found, using defaults")
-                return {
-                    "parameters": {
-                        "learning_rate": 0.1,
-                        "decay_factor": 0.95,
-                        "update_frequency": 3600,
-                        "min_samples": 10,
-                        "max_patterns": 100
-                    },
-                    "storage": {
-                        "data_path": "cache/learning/learning.json",
-                        "config_path": "config/dynamic_config.yaml",
-                        "backup_count": 5,
-                        "auto_save": True,
-                        "save_interval": 300
-                    }
-                }
+            config_path = Path(self.settings.BASE_DIR) / "config" / "learning.yaml"
+            with open(config_path) as f:
+                return yaml.safe_load(f)
         except Exception as e:
             print(f"Error loading learning config: {e}")
-            return {}
+            return {
+                "parameters": {
+                    "learning_rate": 0.1,
+                    "decay_factor": 0.95,
+                    "update_frequency": 3600,
+                    "min_samples": 10
+                },
+                "storage": {
+                    "data_path": "cache/learning/learning.json",
+                    "config_path": "config/dynamic_config.yaml",
+                    "backup_count": 5
+                },
+                "pattern_learning": {
+                    "min_confidence": 0.5,
+                    "min_occurrences": 3,
+                    "success_threshold": 0.7
+                }
+            }
     
     async def _initialize_learning_components(self):
         """Initialize learning system components"""
@@ -1098,3 +1118,22 @@ class LearningManager:
     def set_conversation_state(self, in_conversation: bool):
         """Update conversation state"""
         self.in_conversation = in_conversation
+    
+    async def _load_dynamic_config(self):
+        """Load dynamic configuration asynchronously"""
+        try:
+            if self.config_file.exists():
+                async with aiofiles.open(self.config_file, 'r') as f:
+                    content = await f.read()
+                    config = yaml.safe_load(content)
+                    if config:
+                        # Update learning parameters
+                        if "parameters" in config:
+                            self.learning_config["parameters"].update(config["parameters"])
+                        # Update pattern learning thresholds
+                        if "pattern_learning" in config:
+                            self.learning_config["pattern_learning"].update(config["pattern_learning"])
+                        print("Loaded dynamic learning configuration")
+        except Exception as e:
+            print(f"Error loading dynamic config: {e}")
+            # Continue with default config

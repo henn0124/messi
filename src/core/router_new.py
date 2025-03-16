@@ -9,8 +9,8 @@ import yaml
 from pathlib import Path
 
 class AssistantRouter:
-    def __init__(self, user_manager=None):
-        self.settings = Settings()
+    def __init__(self, settings: Settings, learning_manager=None, user_manager=None):
+        self.settings = settings
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
         self.user_manager = user_manager
         
@@ -18,7 +18,7 @@ class AssistantRouter:
         self.skills_config = self._load_skills_config()
         
         # Initialize learning components
-        self.learning_manager = LearningManager() if self.settings.learning.enabled else None
+        self.learning_manager = learning_manager if learning_manager else LearningManager() if self.settings.learning.enabled else None
         self.intent_learner = IntentLearner() if self.settings.learning.enabled else None
         self.context_manager = ContextManager(self.learning_manager)
         
@@ -32,7 +32,7 @@ class AssistantRouter:
     def _load_skills_config(self) -> Dict:
         """Load skills configuration"""
         try:
-            config_path = Path("config/skills_config.yaml")
+            config_path = Path(self.settings.BASE_DIR) / "config" / "skills_config.yaml"
             with open(config_path) as f:
                 return yaml.safe_load(f)
         except Exception as e:
@@ -42,14 +42,12 @@ class AssistantRouter:
     def _load_skills(self):
         """Load available skills from skills directory"""
         try:
-            from .skills.available.education import Education, skill_manifest as education_manifest
-            from .skills.available.story import Story, skill_manifest as story_manifest
-            # Add more skills imports here
+            from .skills.available.education import EducationSkill
+            from .skills.available.conversation import ConversationSkill
             
-            # Initialize skills with manifests
-            self.skills["education"] = Education()
-            self.skills["story"] = Story()
-            # Add more skills here
+            # Initialize skills with settings
+            self.skills["education"] = EducationSkill(self.settings)
+            self.skills["conversation"] = ConversationSkill(self.settings)
             
         except Exception as e:
             print(f"Error loading skills: {e}")
@@ -163,7 +161,7 @@ class AssistantRouter:
         """Generate helpful contextual response using OpenAI"""
         try:
             response = await self.client.chat.completions.create(
-                model=self.settings.OPENAI_CHAT_MODEL,
+                model=self.settings.models.chat,
                 messages=[
                     {"role": "system", "content": """
                     You are a friendly educational assistant.
@@ -176,8 +174,8 @@ class AssistantRouter:
                     """},
                     {"role": "user", "content": f"User asked: {text}"}
                 ],
-                temperature=self.settings.MODEL_TEMPERATURE,
-                max_tokens=self.settings.MODEL_MAX_TOKENS
+                temperature=self.settings.models.temperature,
+                max_tokens=self.settings.models.max_tokens
             )
             
             return response.choices[0].message.content.strip()
@@ -190,7 +188,7 @@ class AssistantRouter:
         """Extract entities from text with context awareness"""
         try:
             response = await self.client.chat.completions.create(
-                model=self.settings.OPENAI_CHAT_MODEL,
+                model=self.settings.models.chat,
                 messages=[
                     {"role": "system", "content": """
                     Extract key entities from the text.
@@ -203,8 +201,8 @@ class AssistantRouter:
                     """},
                     {"role": "user", "content": text}
                 ],
-                temperature=self.settings.MODEL_TEMPERATURE,
-                max_tokens=self.settings.MODEL_MAX_TOKENS
+                temperature=self.settings.models.temperature,
+                max_tokens=self.settings.models.max_tokens
             )
             
             entities = response.choices[0].message.content.strip().split(',')
@@ -212,4 +210,13 @@ class AssistantRouter:
             
         except Exception as e:
             print(f"Error extracting entities: {e}")
-            return [] 
+            return []
+
+    async def get_response(self, text: str, is_follow_up: bool = False) -> str:
+        """Get response for a command (compatibility method)"""
+        context = {
+            "is_follow_up": is_follow_up,
+            "user_id": "default"  # Use default user for now
+        }
+        response = await self.route_request(text, context)
+        return response.get("text", "I'm not sure how to help with that.") 

@@ -92,36 +92,43 @@ class AudioTester:
     def _find_available_input_device(self):
         """Find an available input device"""
         # First try the configured device
-        primary_device = self.audio_config["input"]["device"]
+        primary_device = self.audio_config["input"]["device"]  # From config.yaml
+        print(f"\nTrying primary input device: {primary_device}")
         stream = self._try_open_input_device(primary_device)
         if stream:
-            print(f"Using primary device: {primary_device}")
+            print(f"✓ Successfully opened primary input device: {primary_device}")
             return stream, primary_device
 
-        # Try alternative device names for TONOR TM20
-        alt_devices = [
-            "hw:CARD=Device_1,DEV=0",
-            "plughw:CARD=Device_1,DEV=0",
-            "sysdefault:CARD=Device_1",
-            "default"
-        ]
-        
-        for device in alt_devices:
-            print(f"Trying alternative device: {device}")
-            stream = self._try_open_input_device(device)
-            if stream:
-                print(f"Using alternative device: {device}")
-                return stream, device
+        print("❌ Failed to open primary input device")
+        return None, None
 
-        # Last resort: try any available capture device
-        for device in alsaaudio.pcms(alsaaudio.PCM_CAPTURE):
-            if device not in ["null", "default"]:
-                print(f"Trying fallback device: {device}")
-                stream = self._try_open_input_device(device)
-                if stream:
-                    print(f"Using fallback device: {device}")
-                    return stream, device
+    def _try_open_output_device(self, device_name):
+        """Try to open an output device with fallbacks"""
+        try:
+            return alsaaudio.PCM(
+                type=alsaaudio.PCM_PLAYBACK,
+                mode=alsaaudio.PCM_NORMAL,
+                device=device_name,
+                format=alsaaudio.PCM_FORMAT_S16_LE,
+                channels=self.channels,
+                rate=self.output_rate,
+                periodsize=self.period_size
+            )
+        except alsaaudio.ALSAAudioError as e:
+            print(f"Could not open {device_name}: {e}")
+            return None
 
+    def _find_available_output_device(self):
+        """Find an available output device"""
+        # First try the configured device
+        primary_device = self.audio_config["output"]["device"]  # From config.yaml
+        print(f"\nTrying primary output device: {primary_device}")
+        stream = self._try_open_output_device(primary_device)
+        if stream:
+            print(f"✓ Successfully opened primary output device: {primary_device}")
+            return stream, primary_device
+
+        print("❌ Failed to open primary output device")
         return None, None
 
     async def initialize_audio(self):
@@ -143,27 +150,32 @@ class AudioTester:
             # Try to find an available input device
             self.input_stream, input_device = self._find_available_input_device()
             if not self.input_stream:
-                print("❌ Could not find any available input devices!")
+                print("❌ Could not open input device!")
+                print("Please check your microphone connection and permissions.")
+                print(f"Expected device: {self.audio_config['input']['device']}")
                 return False
             
-            # Initialize output stream
-            try:
-                self.output_stream = alsaaudio.PCM(
-                    type=alsaaudio.PCM_PLAYBACK,
-                    mode=alsaaudio.PCM_NORMAL,
-                    device="default",  # Use default output device
-                    format=alsaaudio.PCM_FORMAT_S16_LE,
-                    channels=self.channels,
-                    rate=self.output_rate,
-                    periodsize=self.period_size
-                )
-            except alsaaudio.ALSAAudioError as e:
-                print(f"Warning: Could not open output device: {e}")
+            # Try to find an available output device
+            self.output_stream, output_device = self._find_available_output_device()
+            if not self.output_stream:
+                print("❌ Could not open output device!")
+                print("Please check your speaker connection and permissions.")
+                print(f"Expected device: {self.audio_config['output']['device']}")
                 print("Continuing without audio output...")
             
             print("\n✓ Audio devices initialized")
             print(f"Input device: {input_device}")
-            print(f"Output device: {'default' if self.output_stream else 'None'}")
+            print(f"Output device: {output_device if self.output_stream else 'None'}")
+            
+            # Print audio configuration
+            print("\nAudio Configuration:")
+            print(f"Sample rates:")
+            print(f"  Input: {self.input_rate}Hz")
+            print(f"  Output: {self.output_rate}Hz")
+            print(f"  Processing: {self.processing_rate}Hz")
+            print(f"Channels: {self.channels}")
+            print(f"Period size: {self.period_size} frames")
+            
             return True
             
         except Exception as e:

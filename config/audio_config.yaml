@@ -1,0 +1,11 @@
+audio:
+  input:
+    device: "hw:1,0"
+    rate: 48000
+    processing_rate: 16000
+    channels: 1
+  output:
+    device: "hw:CARD=Headphones,DEV=0"
+    rate: 48000
+    channels: 1
+    period_size: 4096 

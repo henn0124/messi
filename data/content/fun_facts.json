@@ -1,0 +1,37 @@
+{
+  "animals": [
+    "A group of flamingos is called a flamboyance!",
+    "Penguins can jump up to 6 feet out of water!",
+    "Sloths take two weeks to digest their food!",
+    "Otters hold hands while sleeping so they don't float away!",
+    "A giraffe's tongue is so long it can clean its own ears!"
+  ],
+  "space": [
+    "One day on Venus is longer than one year on Venus!",
+    "The Sun is so big that about 1.3 million Earths could fit inside it!",
+    "There's a planet made of diamonds twice the size of Earth!",
+    "Astronauts grow taller in space!",
+    "The footprints on the Moon will stay there for millions of years!"
+  ],
+  "science": [
+    "Honey never spoils! Archaeologists found 3000-year-old honey still good to eat!",
+    "A bolt of lightning is five times hotter than the surface of the Sun!",
+    "Bananas are berries, but strawberries aren't!",
+    "Your nose can remember 50,000 different scents!",
+    "A day on Mars is just 37 minutes longer than a day on Earth!"
+  ],
+  "history": [
+    "The Great Wall of China took over 2000 years to build!",
+    "Ancient Egyptians used to sleep on pillows made of stone!",
+    "The first oranges weren't orange - they were green!",
+    "People used to say 'prunes' instead of 'cheese' when taking photos!",
+    "The first computer mouse was made of wood!"
+  ],
+  "body": [
+    "Your body has enough iron in it to make a nail 3 inches long!",
+    "Your heart beats about 100,000 times every day!",
+    "Your brain generates enough electricity to power a small light bulb!",
+    "You blink about 20 times every minute!",
+    "Your fingernails grow faster on your dominant hand!"
+  ]
+} 

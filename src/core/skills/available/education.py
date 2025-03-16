@@ -36,8 +36,8 @@ Usage:
 """
 
 class EducationSkill:
-    def __init__(self):
-        self.settings = Settings()
+    def __init__(self, settings: Settings):
+        self.settings = settings
         self.client = AsyncOpenAI(api_key=self.settings.OPENAI_API_KEY)
         self.conversation_context = []
         self.learning_manager = None  # Will be set by router
