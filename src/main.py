@@ -13,101 +13,65 @@ import numpy as np
 import wave
 import io
 
-from core.audio import AudioInterface
-from core.voice_synthesis import VoiceSynthesis
+from core.audio import AudioManager
+from core.voice_synthesis import VoiceSynthesisManager
 from core.wake_word import WakeWordDetector
 
-class MessiAssistant:
-    def __init__(self):
-        """Initialize Messi Assistant"""
-        # Load environment variables first
-        load_dotenv()
-        
+async def main():
+    """Main entry point for Messi Assistant"""
+    try:
         # Load configuration
-        self.config = self._load_config()
+        with open("config.yml", "r") as f:
+            config = yaml.safe_load(f)
+            
+        print("\n🎯 Wake Word Configuration:")
+        print(f"  Frame Length: {config['wake_word']['frame_length']}")
+        print(f"  Sample Rate: {config['wake_word']['sample_rate']}")
+        print(f"  Sensitivity: {config['wake_word']['sensitivity']}")
+        print(f"  Model Path: {config['wake_word']['model_path']}")
         
-        # Update config with environment variables
-        self.config["wake_word"]["access_key"] = os.getenv("PICOVOICE_ACCESS_KEY")
-        self.config["voice"]["api_key"] = os.getenv("ELEVENLABS_API_KEY")
+        # Initialize audio and voice synthesis
+        audio_manager = AudioManager(config)
+        if not await audio_manager.initialize():
+            print("❌ Failed to initialize audio system")
+            return
+            
+        print("\n🔍 Running audio loopback test...")
+        if not await audio_manager.test_audio_loop(duration=2.0):
+            print("\n⚠️ Audio loopback test failed. Please check your audio setup.")
+            await audio_manager.cleanup()
+            return
+            
+        print("\n🎙️ Audio test passed! Starting main loop...")
         
-        # Get agent ID and strip any comments
-        agent_id = os.getenv("ELEVENLABS_AGENT_ID", "").split("#")[0].strip()
-        self.config["voice"]["agent_id"] = agent_id
-        
-        # Initialize components
-        self.voice_synthesis = VoiceSynthesis(
-            api_key=self.config["voice"]["api_key"],
-            agent_id=self.config["voice"]["agent_id"]
-        )
-        self.audio = AudioInterface(self.config["audio"])
-        self.wake_word = WakeWordDetector(self.config["wake_word"])
-        
-        # State management
-        self.running = False
-        
-    def _load_config(self) -> dict:
-        """Load configuration from YAML"""
-        # Get the project root directory (parent of src)
-        project_root = Path(__file__).parent.parent
-        config_path = project_root / "config" / "config.yaml"
-        
-        with open(config_path, 'r') as f:
-            return yaml.safe_load(f)
-
-    async def start(self):
-        """Start the assistant"""
-        print("\n🚀 Starting Messi Assistant...")
+        # Start audio processing
+        await audio_manager.start_processing()
         
         try:
-            # Initialize audio
-            if not await self.audio.initialize():
-                print("❌ Failed to initialize audio!")
-                return
-            
-            print("✅ Audio initialized successfully!")
-            
-            # Start conversation with Elevenlabs agent
-            if not await self.voice_synthesis.start_conversation():
-                print("❌ Failed to start conversation!")
-                return
-            
-            # Start audio processing
-            self.running = True
-            await self.audio.start_processing()
-            
-            # Keep the assistant running
-            while self.running:
+            while True:
                 # Wait for wake word
-                if await self.audio.wait_for_wake_word(self.wake_word):
-                    # Record command
-                    audio_data = await self.audio.record_command()
-                    if not audio_data:
-                        continue
-                    
-                    # Process command with Elevenlabs agent
-                    response_audio = await self.voice_synthesis.process_audio(audio_data)
-                    if response_audio:
-                        await self.audio.play(response_audio)
+                await audio_manager.wait_for_wake_word()
                 
-        except Exception as e:
-            print(f"\n❌ Error: {e}")
+                # Record command
+                print("\n🎤 Recording command...")
+                audio_data = await audio_manager.record_command()
+                if not audio_data:
+                    print("❌ Failed to record command")
+                    continue
+                    
+                # Play back the recorded command for testing
+                print("\n🔊 Playing back recorded command...")
+                await audio_manager.play(audio_data)
+                
+        except KeyboardInterrupt:
+            print("\n👋 Shutting down...")
+            
+    except Exception as e:
+        print(f"\n❌ Error: {str(e)}")
         
-        finally:
-            await self.stop()
-
-    async def stop(self):
-        """Stop the assistant"""
-        print("\n👋 Stopping Messi Assistant...")
-        self.running = False
-        await self.audio.stop()
-        await self.voice_synthesis.end_conversation()
-        self.wake_word.cleanup()
-        self.voice_synthesis.cleanup_cache()
-
-async def main():
-    """Main entry point"""
-    assistant = MessiAssistant()
-    await assistant.start()
-
+    finally:
+        if 'audio_manager' in locals():
+            await audio_manager.cleanup()
+            
 if __name__ == "__main__":
     asyncio.run(main()) 

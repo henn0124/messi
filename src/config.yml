@@ -1,0 +1,23 @@
+audio:
+  input:
+    device: "hw:3,0"  # TONOR TM20
+    channels: 1
+    rate: 16000
+    period_size: 512  # Reduced to match Porcupine frame length
+    buffer_size: 4096  # Reduced for lower latency
+    silence_threshold: 300  # Lowered threshold for better sensitivity
+    silence_duration: 0.5
+  output:
+    device: "hw:4,0"
+    channels: 2
+    rate: 48000
+    format: "S16_LE"
+    buffer_size: 96000
+    period_size: 24000
+
+wake_word:
+  model_path: "/home/pi/messi/models/hey-messy_en_raspberry-pi_v3_0_0.ppn"
+  access_key: "6Gqbwe9+eiPRsBDZ+oNjMfw0sdPy03hJfOH1+5g/VaieOROzO/iNsw=="  # From .env
+  sensitivity: 0.8
+  frame_length: 512
+  sample_rate: 16000 
