@@ -162,7 +162,7 @@ class AudioManager:
                 
                 self.output_stream = self.pyaudio.open(
                     format=pyaudio.paInt16,
-                    channels=2,  # Use stereo output
+                    channels=1,
                     rate=output_sample_rate,  # Use device's native sample rate
                     output=True,
                     output_device_index=output_device_index,
@@ -258,7 +258,7 @@ class AudioManager:
                 if keyword_index >= 0:
                     print(f"\n🎯 Wake word detected! (Level: {audio_level_rms:.0f})")
                     return
-                    
+                
             except Exception as e:
                 print(f"❌ Error processing audio: {str(e)}")
                 continue
@@ -322,41 +322,52 @@ class AudioManager:
                 wav.writeframes(b''.join(frames))
                 
             return wav_buffer.getvalue()
-            
+                        
         except Exception as e:
             print(f"❌ Error recording command: {str(e)}")
             return None
 
-    def play(self, audio_data: bytes) -> None:
-        """Play audio data through the output device."""
+    async def play(self, audio_data: bytes) -> bool:
+        """Play audio from bytes."""
+        if not self.output_stream:
+            return False
+            
         try:
-            # Convert audio data to AudioSegment for processing
-            audio = AudioSegment.from_wav(io.BytesIO(audio_data))
-            
-            # Convert mono to stereo if needed
-            if audio.channels == 1:
-                audio = audio.set_channels(2)
-            
-            # Convert sample rate if needed
-            if audio.frame_rate != self.output_stream.get_sample_rate():
-                audio = audio.set_frame_rate(self.output_stream.get_sample_rate())
-            
-            # Export back to WAV format
-            wav_data = io.BytesIO()
-            audio.export(wav_data, format="wav")
-            wav_data.seek(0)
-            
-            # Read the WAV data
-            wav = wave.open(wav_data, 'rb')
-            audio_data = wav.readframes(wav.getnframes())
-            wav.close()
-            
-            # Play the audio
-            self.output_stream.write(audio_data)
+            # Read WAV data
+            with wave.open(io.BytesIO(audio_data), 'rb') as wav:
+                # Get audio parameters
+                input_rate = wav.getframerate()
+                input_channels = wav.getnchannels()
+                output_rate = self.output_stream.get_sample_rate()
+                
+                print(f"\n🔊 Playing audio:")
+                print(f"  Input Rate: {input_rate} Hz")
+                print(f"  Output Rate: {output_rate} Hz")
+                print(f"  Channels: {input_channels}")
+                
+                # Convert sample rate if needed
+                if input_rate != output_rate:
+                    print(f"Converting sample rate from {input_rate}Hz to {output_rate}Hz")
+                    # Convert to AudioSegment for resampling
+                    audio_segment = AudioSegment.from_wav(io.BytesIO(audio_data))
+                    audio_segment = audio_segment.set_frame_rate(output_rate)
+                    # Convert back to WAV
+                    wav_buffer = io.BytesIO()
+                    audio_segment.export(wav_buffer, format="wav")
+                    audio_data = wav_buffer.getvalue()
+                
+                # Read and play audio data
+                chunk_size = self.porcupine.frame_length
+                data = wav.readframes(chunk_size)
+                while data:
+                    self.output_stream.write(data)
+                    data = wav.readframes(chunk_size)
+                    
+            return True
             
         except Exception as e:
             print(f"❌ Error playing audio: {str(e)}")
-            raise
+            return False
 
     async def stop(self):
         """Stop audio processing"""
@@ -367,74 +378,125 @@ class AudioManager:
             self.output_stream.close()
 
     async def test_audio_loop(self, duration: float = 3.0) -> bool:
-        """Test audio system by creating a feedback loop between speaker and microphone."""
+        """Test audio system by playing a tone and recording user speech."""
         try:
             print("\n🔊 Starting audio system test...")
             
-            # Generate test tone
-            print("\n🎵 Generating test tone...")
+            # First test output
+            print("\n🎵 Testing audio output...")
             sample_rate = self.porcupine.sample_rate
             t = np.linspace(0, duration, int(sample_rate * duration), False)
             tone = np.sin(2 * np.pi * 1000 * t)
-            tone = (tone * 32767 * 0.8).astype(np.int16)  # Increased volume to 80% of max
+            tone = (tone * 32767).astype(np.int16)
             tone_bytes = tone.tobytes()
             
             print(f"  Sample Rate: {sample_rate} Hz")
             print(f"  Duration: {duration} seconds")
-            print(f"  Buffer Size: {len(tone_bytes)} bytes")
             
-            # First record some silence as baseline
-            print("\n📊 Recording silence baseline...")
-            silence_frames = await self._record_chunks(self.porcupine.frame_length, 10)
-            silence_audio = np.frombuffer(b''.join(silence_frames), dtype=np.int16)
-            silence_rms = np.sqrt(np.mean(silence_audio**2))
-            print(f"  Silence RMS: {silence_rms:.0f}")
+            try:
+                print("\nPlaying test tone...")
+                self.output_stream.write(tone_bytes)
+                print("✓ Test tone played")
+                print("\nDid you hear the test tone? (y/n)")
+                response = input().lower()
+                if response != 'y':
+                    print("\n❌ Audio output test failed")
+                    print("\nTroubleshooting output:")
+                    print("1. Check if speakers/headphones are connected")
+                    print("2. Verify system volume is not muted")
+                    print("3. Try running 'alsamixer' to check output levels")
+                    print("4. Check if output device is correct in config.yml")
+                    return False
+                print("✓ Audio output test passed")
+                
+            except Exception as e:
+                print(f"❌ Failed to play test tone: {str(e)}")
+                return False
             
-            # Play tone and record simultaneously
-            print("\n🎵 Playing test tone and recording...")
-            print("Please position the microphone near the speaker...")
-            
-            # Start recording
-            frames = []
+            # Now test input with feedback loop
+            print("\n🎤 Testing audio input with feedback loop...")
+            print("Playing a test tone and recording it through the microphone...")
             chunk_size = self.porcupine.frame_length
             num_chunks = int((sample_rate * duration) / chunk_size)
             
-            # Play tone and record in chunks
-            for _ in range(num_chunks):
-                # Record chunk
-                data = self.input_stream.read(chunk_size, exception_on_overflow=False)
-                frames.append(data)
-                # Play corresponding part of tone
-                start_idx = len(frames) * chunk_size * 2  # 2 bytes per sample
-                chunk = tone_bytes[start_idx:start_idx + chunk_size * 2]
-                if chunk:
-                    self.output_stream.write(chunk)
-            
-            # Analyze recorded audio
-            recorded_audio = np.frombuffer(b''.join(frames), dtype=np.int16)
-            rms_level = np.sqrt(np.mean(recorded_audio**2))
-            peak_level = np.max(np.abs(recorded_audio))
-            
-            print("\n📊 Recording Analysis:")
-            print(f"  RMS Level: {rms_level:.0f}")
-            print(f"  Peak Level: {peak_level:.0f}")
-            print(f"  Signal-to-Noise Ratio: {20 * np.log10(rms_level/silence_rms):.1f} dB")
-            
-            # Check if we recorded the tone
-            if rms_level > silence_rms * 2:  # Signal should be at least 6dB above noise
-                print("\n✅ Microphone test passed!")
-                print("  - Successfully recorded the test tone")
-                print("  - Good signal-to-noise ratio")
-                return True
-            else:
-                print("\n❌ Microphone test failed")
-                print("\nTroubleshooting tips:")
-                print("1. Check if microphone is properly connected")
-                print("2. Verify microphone isn't muted in system settings")
-                print("3. Run 'alsamixer' and check capture levels")
-                print("4. Try adjusting microphone position relative to speaker")
-                print("5. Check if input device is correct in config.yml")
+            try:
+                # Start recording
+                print("\nStarting recording...")
+                frames = []
+                
+                # Play tone and record simultaneously
+                self.output_stream.write(tone_bytes)
+                
+                # Record for the duration
+                for _ in range(num_chunks):
+                    try:
+                        data = self.input_stream.read(chunk_size, exception_on_overflow=False)
+                        if not data:
+                            print("❌ Empty audio chunk received")
+                            return False
+                        frames.append(data)
+                    except Exception as e:
+                        print(f"❌ Error reading audio chunk: {str(e)}")
+                        return False
+                
+                if not frames:
+                    print("❌ No audio recorded")
+                    print("\nTroubleshooting input:")
+                    print("1. Check if microphone is properly connected")
+                    print("2. Verify microphone isn't muted in system settings")
+                    print("3. Run 'alsamixer' and check capture levels")
+                    print("4. Try a different USB port")
+                    return False
+                
+                # Print recording details
+                total_bytes = sum(len(frame) for frame in frames)
+                print(f"\nRecording Details:")
+                print(f"  Total Frames: {len(frames)}")
+                print(f"  Total Bytes: {total_bytes}")
+                
+                # Analyze recorded audio
+                recorded_audio = np.frombuffer(b''.join(frames), dtype=np.int16)
+                
+                # Add data validation
+                if len(recorded_audio) == 0:
+                    print("❌ No audio data recorded")
+                    return False
+                    
+                # Check for invalid values
+                if np.any(np.isnan(recorded_audio)):
+                    print("❌ Invalid audio data detected (NaN values)")
+                    return False
+                
+                # Calculate RMS and peak levels with error handling
+                try:
+                    rms_level = np.sqrt(np.mean(recorded_audio.astype(np.float64)**2))
+                    peak_level = np.max(np.abs(recorded_audio))
+                except Exception as e:
+                    print(f"❌ Error calculating audio levels: {str(e)}")
+                    return False
+                
+                print("\n📊 Recording Analysis:")
+                print(f"  RMS Level: {rms_level:.0f}")
+                print(f"  Peak Level: {peak_level:.0f}")
+                
+                if rms_level < 100:
+                    print("\n⚠️ Warning: Very low audio levels detected")
+                    print("Troubleshooting tips:")
+                    print("1. Check if microphone is properly connected")
+                    print("2. Verify microphone isn't muted in system settings")
+                    print("3. Run 'alsamixer' and check capture levels")
+                    print("4. Try a different USB port")
+                    return False
+                
+                print("\n✅ Audio input test completed successfully")
+                print("✓ Microphone is detecting audio levels")
+                
+            except Exception as e:
+                print(f"❌ Failed to record audio: {str(e)}")
                 return False
+            
+            print("\n✨ Audio system test completed")
+            return True
             
         except Exception as e:
             print(f"\n❌ Audio test failed: {str(e)}")
