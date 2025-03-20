@@ -9,15 +9,20 @@ import time
 from datetime import datetime
 from pathlib import Path
 import json
+from elevenlabs import generate, save, set_api_key
+import asyncio
 
 class SpeechManager:
     def __init__(self, settings: Settings):
         self.settings = settings
-        print(f"SpeechManager initializing with API key starting with: {self.settings.OPENAI_API_KEY[:10]}...")
+        print(f"SpeechManager initializing with OpenAI API key starting with: {self.settings.OPENAI_API_KEY[:10]}...")
         self.client = AsyncOpenAI(
             api_key=self.settings.OPENAI_API_KEY,
             timeout=10.0  # 10 second timeout
         )
+        
+        # Set ElevenLabs API key
+        set_api_key(self.settings.ELEVENLABS_API_KEY)
         
         # Create cache directory for STT WAV files
         self.cache_dir = Path(self.settings.CACHE_DIR) / "stt"
@@ -89,7 +94,7 @@ class SpeechManager:
                 total_time = time.time() - start_time
                 print(f"\n⏱️  Total STT processing time: {total_time*1000:.1f}ms")
                 
-                # Save metadata (overwrite previous)
+                # Save metadata
                 meta = {
                     'text': text,
                     'timestamp': datetime.now().isoformat(),
@@ -97,7 +102,7 @@ class SpeechManager:
                         'sample_rate': self.settings.audio["input"]["rate"],
                         'channels': 1,
                         'sample_width': 2,
-                        'original_samples': len(audio_data) // 2,  # 2 bytes per sample
+                        'original_samples': len(audio_data) // 2,
                         'trimmed_samples': len(audio_np),
                         'duration': len(audio_np) / self.settings.audio["input"]["rate"]
                     },
@@ -109,73 +114,46 @@ class SpeechManager:
                     json.dump(meta, f, indent=2)
                 
                 return text
-            else:
-                print("\n✗ Whisper API returned no text")
-                return None
-                
+            return None
+            
         except Exception as e:
-            print(f"\n✗ Error in Whisper processing: {e}")
+            print(f"Error processing audio: {str(e)}")
             traceback.print_exc()
             return None
-        
+
     async def speak(self, text: str) -> None:
-        """Convert text to speech using OpenAI's TTS API and play it"""
+        """Convert text to speech using ElevenLabs"""
         try:
             print(f"\n🔊 Converting to speech: {text[:50]}...")
             
-            # Get speech audio from OpenAI in WAV format
-            response = await self.client.audio.speech.create(
-                model="tts-1",
-                voice="alloy",
-                input=text,
-                response_format="wav"  # Request WAV format for lower latency
+            # Generate audio using ElevenLabs
+            audio = generate(
+                text=text,
+                voice=self.settings.voice.agent_id,  # Use agent ID from settings
+                model="eleven_monolingual_v1"
             )
-            
-            # Get the audio data (WAV format)
-            audio_data = response.content
             
             # Save to WAV file
             output_file = self.cache_dir / "tts_output.wav"
-            with open(output_file, "wb") as f:
-                f.write(audio_data)
+            save(audio, str(output_file))
             
             print(f"📝 Saved TTS audio to: {output_file}")
             
-            # Play audio using aplay
+            # Play audio using mplayer (more reliable than aplay)
             import subprocess
             print("Playing audio...")
             
-            # Try different playback methods in sequence
-            playback_devices = [
-                "plughw:CARD=Device_1,DEV=0",  # USB device
-                "plughw:CARD=Headphones,DEV=0",  # Built-in audio
-                "sysdefault:CARD=Device_1",  # Another format for USB
-                "default"  # System default
-            ]
-            
-            for device in playback_devices:
-                try:
-                    print(f"Trying playback on device: {device}")
-                    # Use -v flag for verbose output
-                    result = subprocess.run(
-                        ["aplay", "-v", "-D", device, str(output_file)],
-                        capture_output=True,
-                        text=True,
-                        timeout=5  # 5 second timeout
-                    )
-                    if result.returncode == 0:
-                        print(f"✓ Playback successful on {device}")
-                        return
-                    else:
-                        print(f"Error on {device}: {result.stderr}")
-                except subprocess.TimeoutExpired:
-                    print(f"Timeout on device {device}")
-                    continue
-                except Exception as e:
-                    print(f"Error on {device}: {str(e)}")
-                    continue
-            
-            raise Exception("All playback attempts failed")
+            try:
+                subprocess.run(
+                    ["mplayer", str(output_file)],
+                    capture_output=True,
+                    text=True,
+                    timeout=10  # 10 second timeout
+                )
+                print("✓ Audio playback complete")
+            except Exception as e:
+                print(f"Error during playback: {e}")
+                raise
             
         except Exception as e:
             print(f"Error generating speech: {str(e)}")

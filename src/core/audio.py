@@ -4,7 +4,8 @@ Audio Interface for Messi Assistant
 Handles audio I/O operations using ALSA.
 """
 
-import alsaaudio
+import os
+import pyaudio
 import numpy as np
 import wave
 import io
@@ -12,18 +13,34 @@ import asyncio
 from typing import Optional, Dict, Callable
 import struct
 from pydub import AudioSegment
-import pyaudio
 import time
 from pvporcupine import create as create_porcupine
 import yaml
+import sounddevice as sd
+import queue
+import threading
+import logging
+from pathlib import Path
+from core.wake_word import WakeWordDetector
 
 class AudioManager:
     def __init__(self, config: Dict):
-        """Initialize audio interface with configuration"""
+        """Initialize audio manager with configuration"""
         self.config = config
         self.pyaudio = None
+        self.input_device = None
+        self.output_device = None
         self.input_stream = None
         self.output_stream = None
+        self.audio_queue = queue.Queue()
+        self.is_running = False
+        self.recording_thread = None
+        self.wake_word_detector = None
+        self.silence_threshold = config.get('silence_threshold', 152)
+        self.sample_rate = config.get('sample_rate', 16000)
+        self.period_size = config.get('period_size', 512)
+        self.input_device_name = config.get('input_device', 'hw:4,0')
+        self.output_device_name = config.get('output_device', 'hw:0,0')
         self.running = False
         self.wake_word_detected = False
         self.porcupine = None
@@ -34,157 +51,156 @@ class AudioManager:
         self.stream = None
         self.wake_word_config = config["wake_word"]
 
+    def _find_device_index(self, device_name: str, is_input: bool = True) -> int:
+        """Find device index by name"""
+        for i in range(self.pyaudio.get_device_count()):
+            try:
+                device_info = self.pyaudio.get_device_info_by_index(i)
+                if device_name in device_info["name"]:
+                    if is_input and device_info["maxInputChannels"] > 0:
+                        return i
+                    elif not is_input and device_info["maxOutputChannels"] > 0:
+                        return i
+            except Exception:
+                continue
+        return -1
+
     async def initialize(self) -> bool:
-        """Initialize PyAudio and open streams."""
+        """Initialize audio system"""
         try:
             print("\n🎤 Initializing audio system...")
+            
+            # Force PyAudio to reinitialize
+            if self.pyaudio:
+                self.pyaudio.terminate()
             self.pyaudio = pyaudio.PyAudio()
             
-            # List all devices with detailed information
-            print("\n📋 Available audio devices:")
-            info = {}
+            # List available devices
+            print("\n📋 Available devices:")
             for i in range(self.pyaudio.get_device_count()):
                 try:
                     device_info = self.pyaudio.get_device_info_by_index(i)
-                    info[i] = device_info
                     print(f"\nDevice {i}: {device_info['name']}")
                     print(f"  Host API: {self.pyaudio.get_host_api_info_by_index(device_info['hostApi'])['name']}")
                     print(f"  Input Channels: {device_info['maxInputChannels']}")
                     print(f"  Output Channels: {device_info['maxOutputChannels']}")
                     print(f"  Default Sample Rate: {device_info['defaultSampleRate']}")
-                    print(f"  Is Default Input: {self.pyaudio.get_default_input_device_info()['index'] == i}")
-                    print(f"  Is Default Output: {self.pyaudio.get_default_output_device_info()['index'] == i}")
                 except Exception as e:
                     print(f"  Error getting device info: {str(e)}")
-            
-            # Initialize Porcupine wake word engine
-            try:
-                print("\n🎯 Initializing wake word detector...")
-                self.porcupine = create_porcupine(
-                    access_key=self.wake_word_config["access_key"],
-                    keyword_paths=[self.wake_word_config["model_path"]],
-                    sensitivities=[self.wake_word_config["sensitivity"]]
-                )
-                print("✓ Wake word detector initialized")
-                print(f"  Sample Rate: {self.porcupine.sample_rate} Hz")
-                print(f"  Frame Length: {self.porcupine.frame_length} samples")
-            except Exception as e:
-                print(f"❌ Failed to initialize wake word detector: {str(e)}")
-                raise e
 
-            # Parse input device specification
-            print("\n🎙️ Setting up input device...")
-            try:
-                if self.input_config["device"] == "default":
-                    input_device_index = self.pyaudio.get_default_input_device_info()["index"]
-                    print(f"Using default input device (index {input_device_index})")
-                else:
-                    # Parse hw:X,Y format
-                    parts = self.input_config["device"].split(":")
-                    if len(parts) == 2 and parts[0] == "hw":
-                        card = parts[1].split(",")[0]
-                        # Find the device index by name
-                        input_device_index = None
-                        for i, device_info in info.items():
-                            if "TONOR TM20" in device_info["name"]:
-                                input_device_index = i
-                                break
-                        if input_device_index is None:
-                            raise ValueError(f"TONOR TM20 microphone not found")
-                        print(f"Using TONOR TM20 microphone (index {input_device_index})")
-                    else:
-                        raise ValueError(f"Invalid device format: {self.input_config['device']}")
-                
-                if input_device_index not in info:
-                    raise ValueError(f"Input device index {input_device_index} not found")
-                    
-                print("\nSelected input device details:")
-                print(f"  Name: {info[input_device_index]['name']}")
-                print(f"  Channels: {info[input_device_index]['maxInputChannels']}")
-                print(f"  Sample Rate: {info[input_device_index]['defaultSampleRate']}")
-            except Exception as e:
-                print(f"❌ Error setting up input device: {str(e)}")
-                raise e
+            # Find input device index
+            print("\n🎙️ Finding input device...")
+            input_device_index = self._find_device_index("TONOR TM20", is_input=True)
+            if input_device_index == -1:
+                print("❌ TONOR TM20 microphone not found")
+                print("\nTroubleshooting tips:")
+                print("1. Check if microphone is properly connected")
+                print("2. Try unplugging and reconnecting the microphone")
+                print("3. Run 'arecord -l' to verify device is detected")
+                print("4. Check system logs with 'dmesg | grep -i audio'")
+                return False
+
+            # Find output device index
+            print("\n🔊 Finding output device...")
+            output_device_index = self._find_device_index("USB2.0 Device", is_input=False)
+            if output_device_index == -1:
+                print("❌ USB2.0 Device speaker not found")
+                print("\nTroubleshooting tips:")
+                print("1. Check if speaker is properly connected")
+                print("2. Try unplugging and reconnecting the speaker")
+                print("3. Run 'aplay -l' to verify device is detected")
+                print("4. Check system logs with 'dmesg | grep -i audio'")
+                return False
 
             # Open input stream
-            print("\n🔊 Opening audio streams...")
             try:
+                print("\n🎙️ Opening input stream...")
                 self.input_stream = self.pyaudio.open(
                     format=pyaudio.paInt16,
                     channels=1,
-                    rate=self.porcupine.sample_rate,
+                    rate=self.input_config["sample_rate"],
                     input=True,
                     input_device_index=input_device_index,
-                    frames_per_buffer=self.porcupine.frame_length,
-                    stream_callback=None,
-                    start=False
+                    frames_per_buffer=self.input_config["period_size"]
                 )
-                
-                # Configure buffer size
-                if hasattr(self.input_stream, '_frames_per_buffer'):
-                    self.input_stream._frames_per_buffer = self.input_config["period_size"]
-                
-                # Start the stream
-                self.input_stream.start_stream()
                 print("✓ Input stream opened successfully")
-                
             except Exception as e:
                 print(f"❌ Failed to open input stream: {str(e)}")
-                raise e
+                return False
 
             # Open output stream
             try:
-                print("\n🔊 Setting up output device...")
-                output_device_index = None
-                
-                # First try to find USB audio device
-                for i, device_info in info.items():
-                    if device_info["maxOutputChannels"] > 0:  # Device has output capability
-                        print(f"Found output device: {device_info['name']}")
-                        if "USB" in device_info["name"]:
-                            output_device_index = i
-                            print(f"Selected USB output device: {device_info['name']}")
-                            break
-                
-                # If no USB device found, try default
-                if output_device_index is None:
-                    output_device_index = self.pyaudio.get_default_output_device_info()["index"]
-                    print(f"Using default output device (index {output_device_index})")
-                
-                print(f"\nSelected output device details:")
-                print(f"  Name: {info[output_device_index]['name']}")
-                print(f"  Channels: {info[output_device_index]['maxOutputChannels']}")
-                print(f"  Sample Rate: {info[output_device_index]['defaultSampleRate']}")
-                
-                # Use device's native sample rate
-                output_sample_rate = int(info[output_device_index]['defaultSampleRate'])
-                print(f"Using output sample rate: {output_sample_rate} Hz")
-                
+                print("\n🔊 Opening output stream...")
                 self.output_stream = self.pyaudio.open(
                     format=pyaudio.paInt16,
                     channels=1,
-                    rate=output_sample_rate,  # Use device's native sample rate
+                    rate=self.output_config["sample_rate"],
                     output=True,
                     output_device_index=output_device_index,
                     frames_per_buffer=self.output_config["period_size"]
                 )
                 print("✓ Output stream opened successfully")
-                
             except Exception as e:
                 print(f"❌ Failed to open output stream: {str(e)}")
-                raise e
+                return False
 
             print("\n✨ Audio system initialized successfully")
             return True
             
         except Exception as e:
-            print(f"\n❌ Audio initialization failed: {str(e)}")
+            print(f"❌ Audio initialization failed: {str(e)}")
             if self.pyaudio:
                 self.pyaudio.terminate()
             return False
 
-    async def cleanup(self):
-        """Clean up audio resources."""
+    def start_recording(self, callback: Optional[Callable] = None) -> bool:
+        """Start recording audio"""
+        try:
+            self.is_running = True
+            self.recording_thread = threading.Thread(
+                target=self._recording_loop,
+                args=(callback,)
+            )
+            self.recording_thread.start()
+            return True
+        except Exception as e:
+            print(f"❌ Failed to start recording: {str(e)}")
+            return False
+
+    def stop_recording(self) -> None:
+        """Stop recording audio"""
+        self.is_running = False
+        if self.recording_thread:
+            self.recording_thread.join()
+
+    def _recording_loop(self, callback: Optional[Callable] = None) -> None:
+        """Main recording loop"""
+        try:
+            while self.is_running:
+                try:
+                    data = self.input_stream.read(self.period_size, exception_on_overflow=False)
+                    audio_data = np.frombuffer(data, dtype=np.int16)
+                    if callback:
+                        callback(audio_data)
+                except Exception as e:
+                    print(f"❌ Error reading audio data: {str(e)}")
+                    continue
+            
+        except Exception as e:
+            print(f"❌ Error in recording loop: {str(e)}")
+
+    def play_audio(self, audio_data: np.ndarray) -> bool:
+        """Play audio data"""
+        try:
+            self.output_stream.write(audio_data.tobytes())
+            return True
+        except Exception as e:
+            print(f"❌ Failed to play audio: {str(e)}")
+            return False
+
+    async def cleanup(self) -> None:
+        """Clean up audio resources"""
+        self.stop_recording()
         if self.input_stream:
             self.input_stream.stop_stream()
             self.input_stream.close()
@@ -193,75 +209,66 @@ class AudioManager:
             self.output_stream.close()
         if self.pyaudio:
             self.pyaudio.terminate()
-        if self.porcupine:
-            self.porcupine.delete()
+        if self.wake_word_detector:
+            self.wake_word_detector.stop()
+
+    async def wait_for_wake_word(self) -> None:
+        """Wait for wake word to be detected"""
+        if not self.wake_word_detector:
+            print("❌ Wake word detector not initialized")
+            return
+
+        def on_wake_word():
+            print("🎯 Wake word detected!")
+
+        self.wake_word_detector.start(on_wake_word)
+        while True:
+            await asyncio.sleep(0.1)
+            if not self.is_running:
+                break
+
+    def test_audio_loop(self) -> bool:
+        """Test audio input and output"""
+        try:
+            print("\n🔍 Running audio loopback test...")
+            
+            # Record test audio
+            print("Recording test audio...")
+            audio_data = []
+            self.start_recording(lambda data: audio_data.append(data))
+            time.sleep(2)  # Record for 2 seconds
+            self.stop_recording()
+            
+            if not audio_data:
+                print("❌ No audio data recorded")
+                return False
+                
+            # Concatenate audio data
+            audio_data = np.concatenate(audio_data)
+            
+            # Calculate audio levels
+            rms_level = np.sqrt(np.mean(audio_data**2))
+            peak_level = np.max(np.abs(audio_data))
+            
+            print(f"\n📊 Audio Analysis:")
+            print(f"  RMS Level: {rms_level:.2f}")
+            print(f"  Peak Level: {peak_level:.2f}")
+            
+            if rms_level < 100 or peak_level < 100:
+                print("❌ Audio levels too low")
+                return False
+                
+            print("\n🎙️ Audio test passed!")
+            return True
+                
+            except Exception as e:
+            print(f"❌ Audio test failed: {str(e)}")
+            return False
 
     async def start_processing(self):
         """Start audio processing"""
         self.running = True
         print("\n👂 Listening for 'Hey Messy'...")
-
-    async def wait_for_wake_word(self):
-        """Wait for wake word to be detected."""
-        print("\nListening for wake word 'Hey Messy'...")
-        print("Audio settings:")
-        print(f"  Sample rate: {self.porcupine.sample_rate} Hz")
-        print(f"  Frame length: {self.porcupine.frame_length} samples")
-        print(f"  Input device: {self.input_config['device']}")
-        
-        silence_count = 0
-        last_level_print = time.time()
-        levels_history = []
-        
-        while True:
-            try:
-                pcm = self.input_stream.read(self.porcupine.frame_length, exception_on_overflow=False)
-                pcm_np = np.frombuffer(pcm, dtype=np.int16)
-                
-                # Calculate RMS and peak levels
-                audio_level_rms = np.sqrt(np.mean(pcm_np**2))
-                peak_level = np.max(np.abs(pcm_np))
-                levels_history.append(audio_level_rms)
-                
-                # Keep only last 10 seconds of history
-                if len(levels_history) > 160:  # 16 frames per second * 10 seconds
-                    levels_history.pop(0)
-                
-                current_time = time.time()
-                if current_time - last_level_print >= 1.0:
-                    avg_level = np.mean(levels_history)
-                    max_level = np.max(levels_history)
-                    
-                    print(f"\n📊 Audio Levels:")
-                    print(f"  Current RMS: {audio_level_rms:.0f}")
-                    print(f"  Peak: {peak_level:.0f}")
-                    print(f"  Average (10s): {avg_level:.0f}")
-                    print(f"  Max (10s): {max_level:.0f}")
-                    
-                    if avg_level < 50:  # Very quiet
-                        silence_count += 1
-                        if silence_count >= 3:
-                            print("\n⚠️ Audio levels are very low. Troubleshooting tips:")
-                            print("1. Try speaking louder or moving closer to the mic")
-                            print("2. Check system volume settings:")
-                            print("   - Run 'alsamixer' to check/adjust capture levels")
-                            print("   - Verify 'Input Device' volume in system settings")
-                            print("3. Try unplugging and reconnecting the microphone")
-                            silence_count = 0
-                    else:
-                        silence_count = 0
-                    
-                    last_level_print = current_time
-                
-                # Process for wake word
-                keyword_index = self.porcupine.process(pcm_np)
-                if keyword_index >= 0:
-                    print(f"\n🎯 Wake word detected! (Level: {audio_level_rms:.0f})")
-                    return
-                
-            except Exception as e:
-                print(f"❌ Error processing audio: {str(e)}")
-                continue
 
     async def record(self, duration: float) -> Optional[bytes]:
         """Record audio for specified duration in seconds."""
@@ -291,7 +298,7 @@ class AudioManager:
             frames = []
             silence_threshold = self.input_config["silence_threshold"]
             silence_duration = self.input_config["silence_duration"]
-            chunk_size = self.porcupine.frame_length
+            chunk_size = self.period_size
             
             print("\nRecording... (speak your command)")
             
@@ -318,7 +325,7 @@ class AudioManager:
             with wave.open(wav_buffer, 'wb') as wav:
                 wav.setnchannels(1)
                 wav.setsampwidth(2)  # 16-bit
-                wav.setframerate(self.porcupine.sample_rate)
+                wav.setframerate(int(self.input_device['defaultSampleRate']))
                 wav.writeframes(b''.join(frames))
                 
             return wav_buffer.getvalue()
@@ -338,7 +345,7 @@ class AudioManager:
                 # Get audio parameters
                 input_rate = wav.getframerate()
                 input_channels = wav.getnchannels()
-                output_rate = self.output_stream.get_sample_rate()
+                output_rate = int(self.output_device['defaultSampleRate'])
                 
                 print(f"\n🔊 Playing audio:")
                 print(f"  Input Rate: {input_rate} Hz")
@@ -357,7 +364,7 @@ class AudioManager:
                     audio_data = wav_buffer.getvalue()
                 
                 # Read and play audio data
-                chunk_size = self.porcupine.frame_length
+                chunk_size = self.period_size
                 data = wav.readframes(chunk_size)
                 while data:
                     self.output_stream.write(data)
@@ -384,7 +391,7 @@ class AudioManager:
             
             # First test output
             print("\n🎵 Testing audio output...")
-            sample_rate = self.porcupine.sample_rate
+            sample_rate = int(self.input_device['defaultSampleRate'])
             t = np.linspace(0, duration, int(sample_rate * duration), False)
             tone = np.sin(2 * np.pi * 1000 * t)
             tone = (tone * 32767).astype(np.int16)
@@ -416,7 +423,7 @@ class AudioManager:
             # Now test input with feedback loop
             print("\n🎤 Testing audio input with feedback loop...")
             print("Playing a test tone and recording it through the microphone...")
-            chunk_size = self.porcupine.frame_length
+            chunk_size = self.period_size
             num_chunks = int((sample_rate * duration) / chunk_size)
             
             try:

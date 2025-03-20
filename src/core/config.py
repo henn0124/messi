@@ -51,6 +51,11 @@ class ModelConfig(BaseModel):
     temperature: float = 0.7
     max_tokens: int = 150
 
+class VoiceConfig(BaseModel):
+    """Voice configuration"""
+    api_key: str = Field(..., env="ELEVENLABS_API_KEY")
+    agent_id: str = Field(..., env="ELEVENLABS_AGENT_ID")
+
 class Settings(BaseSettings):
     """Application settings loaded from .env and config.yaml"""
     
@@ -61,6 +66,9 @@ class Settings(BaseSettings):
     
     # Model configuration
     models: ModelConfig = Field(default_factory=ModelConfig)
+    
+    # Voice configuration
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
     
     # Learning configuration  
     learning: LearningConfig = Field(default_factory=LearningConfig)
@@ -137,6 +145,15 @@ class Settings(BaseSettings):
                 self.WAKE_WORD_SENSITIVITY = wake_word_config.get("sensitivity")
                 self.WAKE_WORD_VOLUME_THRESHOLD = wake_word_config.get("volume_threshold")
                 self.WAKE_WORD_MAX_VOLUME = wake_word_config.get("max_volume")
+                
+            if "voice" in config:
+                # Don't override API key and agent ID from .env
+                voice_config = config["voice"].copy()
+                if "api_key" in voice_config:
+                    del voice_config["api_key"]
+                if "agent_id" in voice_config:
+                    del voice_config["agent_id"]
+                self.voice = VoiceConfig(**voice_config)
                 
         except Exception as e:
             print(f"Error loading YAML config: {e}")

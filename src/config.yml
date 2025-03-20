@@ -1,23 +1,67 @@
+# Application Configuration
+models:
+  chat: gpt-4-1106-preview
+  whisper: whisper-1
+  tts: tts-1
+  tts_voice: alloy           # Faster voice
+  tts_fallback: nova        # Fallback voice
+  tts_speed: 1.0            # Normal speed (0.25 to 4.0)
+  temperature: 0.7
+  max_tokens: 150          # Reduced for concise responses
+
+# Audio Settings (ALSA)
 audio:
   input:
-    device: "hw:3,0"  # TONOR TM20
-    channels: 1
-    rate: 16000
-    period_size: 512  # Reduced to match Porcupine frame length
-    buffer_size: 4096  # Reduced for lower latency
-    silence_threshold: 300  # Lowered threshold for better sensitivity
-    silence_duration: 0.5
-  output:
-    device: "hw:4,0"
-    channels: 2
-    rate: 48000
-    format: "S16_LE"
-    buffer_size: 96000
-    period_size: 24000
+    # ALSA device settings
+    device: "hw:4,0"                    # USB2.0 Device Audio
+    format: "S16_LE"                    # 16-bit signed little-endian
+    rate: 16000                         # Sample rate (16kHz) for Porcupine
+    channels: 1                         # Mono input
+    period_size: 512                    # Smaller period size for wake word detection
+    
+    # Processing settings
+    silence_threshold: 152              # Volume level to detect silence
+    silence_duration: 0.5               # Duration of silence to end recording
 
+  output:
+    # ALSA device settings
+    device: "hw:0,0"                    # bcm2835 Headphones
+    format: "S16_LE"                    # 16-bit signed little-endian
+    rate: 44100                         # Sample rate (44.1kHz)
+    channels: 1                         # Mono output
+    period_size: 16384                  # Large period size to prevent underruns
+    buffer_size: 65536                  # Very large buffer for stability
+
+# Wake Word Settings
 wake_word:
   model_path: "/home/pi/messi/models/hey-messy_en_raspberry-pi_v3_0_0.ppn"
-  access_key: "6Gqbwe9+eiPRsBDZ+oNjMfw0sdPy03hJfOH1+5g/VaieOROzO/iNsw=="  # From .env
-  sensitivity: 0.8
-  frame_length: 512
-  sample_rate: 16000 
+  access_key: "${PICOVOICE_ACCESS_KEY}"  # Set in .env file
+  sensitivity: 0.8                      # Wake word detection sensitivity (0-1)
+  frame_length: 512                     # Frame length for wake word detection
+  sample_rate: 16000                    # Sample rate for wake word detection
+
+# Voice Settings (Elevenlabs)
+voice:
+  api_key: "${ELEVENLABS_API_KEY}"      # Set in .env file
+  agent_id: "${ELEVENLABS_AGENT_ID}"    # Set in .env file
+
+# Cache Settings
+cache:
+  max_age: 24                          # Maximum cache age in hours
+
+# Logging Settings
+logging:
+  level: "INFO"
+  file: "logs/messi.log"
+  max_size: "1MB"
+  backup_count: 5
+
+# Notes:
+# - Audio uses ALSA (Advanced Linux Sound Architecture) directly
+# - All volume levels use RMS values from 16-bit audio (0-32767)
+#   - Ambient noise: ~200-800
+#   - Normal speech: ~500-2000
+#   - Loud speech: ~2000-4000
+#   - Very loud/clipping: >4000
+# - Calibrated for USB2.0 Device microphone
+# - Recalibrate if microphone settings change 
